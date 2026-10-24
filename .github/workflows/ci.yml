@@ -47,6 +47,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Helm for chart regressions
+        uses: azure/setup-helm@v4
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

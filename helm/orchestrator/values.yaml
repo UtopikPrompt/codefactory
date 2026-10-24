@@ -1,10 +1,8 @@
 # Orchestrator chart values: the LangGraph supervisor loop + always-on
 # task-acceptor gateway.
 
-# Namespace where this chart's resources are placed. Defaults to the release
-# namespace so `helm template` renders them in the correct namespace.
-# Override here when installing into a non-default namespace.
-namespace: "orchestrator"
+namespaces:
+  create: true
 
 icon: ""
 

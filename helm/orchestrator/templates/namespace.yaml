@@ -1,12 +1,10 @@
-{{/*
-Orchestrator namespace. Scoped to the parent release namespace via the
-`namespace` value so `helm template` renders it in the correct namespace.
-*/}}
-{{- if not (lookup "v1" "Namespace" "" (.Release.Namespace | default .Values.namespace)) }}
+{{- if and .Values.namespaces.create (not (lookup "v1" "Namespace" "" .Release.Namespace)) }}
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace }}
+  name: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
   labels:
     app.kubernetes.io/part-of: {{ .Chart.Name }}
     app.kubernetes.io/component: orchestrator

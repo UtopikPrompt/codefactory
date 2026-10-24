@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Chart.Name }}-gateway-metrics
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app: orchestrator
     component: gateway
@@ -24,7 +24,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Chart.Name }}-supervisor-metrics
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app: orchestrator
     component: supervisor
@@ -44,7 +44,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Chart.Name }}-worker-metrics
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app: orchestrator
     component: worker
