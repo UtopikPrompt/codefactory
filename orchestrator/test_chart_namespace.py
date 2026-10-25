@@ -20,7 +20,12 @@ def test_main_packages_are_published_with_mutable_main_tags():
     publish_chart = workflow["jobs"]["publish-orchestrator-chart"]
     package_step = next(
         step for step in publish_chart["steps"] if step.get("id") == "package-and-push")
-    assert "helm package helm/orchestrator --version main" in package_step["run"]
+    assert 'package_version="0.0.0-main"' in package_step["run"]
+    assert 'helm package helm/orchestrator --version "$package_version"' in package_step["run"]
+    assert 'oras tag "ghcr.io/utopikprompt/codefactory/orchestrator:$package_version" main' \
+        in package_step["run"]
+    assert "orchestrator:main" in package_step["run"]
+    assert any(step.get("name") == "Set up ORAS" for step in publish_chart["steps"])
 
     build_images = workflow["jobs"]["build-images"]
     image_step = next(

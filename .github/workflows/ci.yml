@@ -184,6 +184,9 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@v1
+
       - name: Log in to GHCR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -193,14 +196,13 @@ jobs:
         id: package-and-push
         shell: bash
         run: |
-          helm package helm/orchestrator --version main --destination "$RUNNER_TEMP"
+          package_version="0.0.0-main"
+          helm package helm/orchestrator --version "$package_version" --destination "$RUNNER_TEMP"
           package="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'orchestrator-*.tgz' -print -quit)"
           if [[ -z "$package" ]]; then
             echo "Packaged orchestrator chart not found" >&2
             exit 1
           fi
-          version="${package##*/orchestrator-}"
-          version="${version%.tgz}"
           push_output="$RUNNER_TEMP/helm-push-output.txt"
           helm push "$package" oci://ghcr.io/utopikprompt/codefactory | tee "$push_output"
           digest="$(sed -n 's/^Digest: //p' "$push_output")"
@@ -208,9 +210,10 @@ jobs:
             echo "Helm push did not return a valid chart digest" >&2
             exit 1
           fi
+          oras tag "ghcr.io/utopikprompt/codefactory/orchestrator:$package_version" main
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           {
-            printf 'Published chart: `oci://ghcr.io/utopikprompt/codefactory/orchestrator:%s`\n\n' "$version"
+            printf 'Published chart: `oci://ghcr.io/utopikprompt/codefactory/orchestrator:main`\n\n'
             printf 'Digest: `%s`\n' "$digest"
           } >> "$GITHUB_STEP_SUMMARY"
 
