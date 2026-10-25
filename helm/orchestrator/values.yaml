@@ -35,8 +35,8 @@ supervisor:
     acceptor-url: "https://code-factory.local"
     allowed-base-branches: ""
     reviewers: ""
-    judge-url: "http://llama-server-args-gpu1.inference.svc.cluster.local:8000/v1"
-    coder-url: "http://llama-server-args-gpu0.inference.svc.cluster.local:8000/v1"
+    judge-url: "http://judge.inference.svc.cluster.local:8000/v1"
+    coder-url: "http://coder.inference.svc.cluster.local:8000/v1"
     judge-model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
     coder-model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
     acceptance-threshold: 0.8
