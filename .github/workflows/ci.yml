@@ -187,6 +187,13 @@ jobs:
       - name: Set up ORAS
         uses: oras-project/setup-oras@v1
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install chart metadata tool
+        run: python -m pip install "PyYAML>=6,<7"
+
       - name: Log in to GHCR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -198,11 +205,37 @@ jobs:
         id: package-and-push
         shell: bash
         run: |
-          package_version="0.0.0-main"
-          helm package helm/orchestrator --version "$package_version" --destination "$RUNNER_TEMP"
+          set -euo pipefail
+          package_version="0.0.0-sha.${GITHUB_SHA}"
+          chart_source="$RUNNER_TEMP/chart-source"
+          cp -a helm/orchestrator "$chart_source"
+          python - "$chart_source/Chart.yaml" "$GITHUB_SHA" <<'PY'
+          import sys
+          from pathlib import Path
+          import yaml
+
+          chart_path = Path(sys.argv[1])
+          chart = yaml.safe_load(chart_path.read_text(encoding="utf-8"))
+          chart.setdefault("annotations", {})["org.opencontainers.image.revision"] = sys.argv[2]
+          chart_path.write_text(yaml.safe_dump(chart, sort_keys=False), encoding="utf-8")
+          PY
+          helm package "$chart_source" --version "$package_version" --destination "$RUNNER_TEMP"
           package="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'orchestrator-*.tgz' -print -quit)"
           if [[ -z "$package" ]]; then
             echo "Packaged orchestrator chart not found" >&2
+            exit 1
+          fi
+          chart_ref="oci://ghcr.io/utopikprompt/codefactory/orchestrator"
+          existing_dir="$RUNNER_TEMP/existing-chart"
+          pull_log="$RUNNER_TEMP/existing-chart-pull.log"
+          mkdir -p "$existing_dir"
+          if helm pull "$chart_ref" --version "$package_version" --destination "$existing_dir" >"$pull_log" 2>&1; then
+            echo "Refusing to overwrite existing commit-addressed chart version $package_version" >&2
+            exit 1
+          fi
+          if ! grep -Eqi 'not found|manifest unknown|404' "$pull_log"; then
+            cat "$pull_log" >&2
+            echo "Could not safely determine whether chart version $package_version exists" >&2
             exit 1
           fi
           push_output="$RUNNER_TEMP/helm-push-output.txt"
@@ -214,10 +247,40 @@ jobs:
           fi
           oras tag "ghcr.io/utopikprompt/codefactory/orchestrator:$package_version" main
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
           {
-            printf 'Published chart: `oci://ghcr.io/utopikprompt/codefactory/orchestrator:main`\n\n'
+            printf 'Published immutable chart version: `%s`\n\n' "$package_version"
             printf 'Digest: `%s`\n' "$digest"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write exact chart manifest
+        env:
+          CHART_DIGEST: ${{ steps.package-and-push.outputs.digest }}
+          CHART_VERSION: ${{ steps.package-and-push.outputs.version }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = {
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "chart": "oci://ghcr.io/utopikprompt/codefactory/orchestrator",
+              "chartVersion": os.environ["CHART_VERSION"],
+              "chartDigest": os.environ["CHART_DIGEST"],
+          }
+          Path(os.environ["RUNNER_TEMP"], "codefactory-chart.json").write_text(
+              json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8",
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codefactory-chart-${{ github.sha }}
+          path: ${{ runner.temp }}/codefactory-chart.json
+          if-no-files-found: error
+          retention-days: 90
 
   build-images:
     needs: [lint, test, chart-validation, set-image-tag]
@@ -246,6 +309,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build-image
         uses: docker/build-push-action@v7
         with:
           context: ./orchestrator/${{ matrix.service }}
@@ -257,6 +321,99 @@ jobs:
             ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:latest
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Write exact image manifest
+        if: env.PUBLISH_IMAGES == 'true'
+        env:
+          IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
+          IMAGE_SERVICE: ${{ matrix.service }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf '{"sourceCommit":"%s","service":"%s","image":"ghcr.io/utopikprompt/codefactory-%s@%s"}\n' \
+            "$SOURCE_COMMIT" "$IMAGE_SERVICE" "$IMAGE_SERVICE" "$IMAGE_DIGEST" \
+            > "$RUNNER_TEMP/codefactory-image-${IMAGE_SERVICE}.json"
+
+      - uses: actions/upload-artifact@v4
+        if: env.PUBLISH_IMAGES == 'true'
+        with:
+          name: codefactory-image-${{ matrix.service }}
+          path: ${{ runner.temp }}/codefactory-image-${{ matrix.service }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  release-manifest:
+    name: Assemble exact Code Factory release manifest
+    if: >-
+      ${{
+        github.ref == 'refs/heads/main' &&
+        vars.GHCR_PUBLISH_ENABLED == 'true' &&
+        vars.HELM_CHART_PUBLISH_ENABLED == 'true' &&
+        needs.publish-orchestrator-chart.result == 'success' &&
+        needs.build-images.result == 'success'
+      }}
+    needs: [publish-orchestrator-chart, build-images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: codefactory-chart-${{ github.sha }}
+          path: ${{ runner.temp }}/codefactory-manifests
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: codefactory-image-*
+          path: ${{ runner.temp }}/codefactory-manifests
+          merge-multiple: true
+
+      - name: Assemble and validate complete product manifest
+        env:
+          MANIFEST_DIR: ${{ runner.temp }}/codefactory-manifests
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          directory = Path(os.environ["MANIFEST_DIR"])
+          source_commit = os.environ["SOURCE_COMMIT"]
+          chart = json.loads((directory / "codefactory-chart.json").read_text(encoding="utf-8"))
+          images = {}
+          for path in sorted(directory.glob("codefactory-image-*.json")):
+              record = json.loads(path.read_text(encoding="utf-8"))
+              if record.get("sourceCommit") != source_commit or record.get("service") in images:
+                  raise SystemExit("Image manifest source or service identity mismatch")
+              service = record["service"]
+              if service not in {"gateway", "management", "supervisor", "worker"}:
+                  raise SystemExit("Unexpected Code Factory image service")
+              if not re.fullmatch(r"ghcr\.io/utopikprompt/codefactory-" + service + r"@sha256:[a-f0-9]{64}", record["image"]):
+                  raise SystemExit("Image manifest is not pinned to an approved digest")
+              images[service] = record["image"]
+          expected = {"gateway", "management", "supervisor", "worker"}
+          if set(images) != expected or chart.get("sourceCommit") != source_commit:
+              raise SystemExit("Complete chart and all four image manifests are required")
+          manifest = {
+              "product": "codefactory",
+              **chart,
+              "images": images,
+          }
+          if (not re.fullmatch(r"[0-9a-f]{40}", source_commit)
+                  or not re.fullmatch(r"sha256:[a-f0-9]{64}", manifest["chartDigest"])):
+              raise SystemExit("Release manifest source or chart digest is invalid")
+          (directory / "codefactory-release-manifest.json").write_text(
+              json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8",
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codefactory-release-${{ github.sha }}
+          path: ${{ runner.temp }}/codefactory-manifests/codefactory-release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
 
   summary:
     name: CI Summary

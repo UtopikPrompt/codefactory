@@ -15,26 +15,37 @@ def test_namespace_is_not_a_chart_value():
     assert "namespace" not in schema["properties"]
 
 
-def test_main_packages_are_published_with_mutable_main_tags():
+def test_chart_publication_is_commit_addressed_and_refuses_overwrite():
     workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
     publish_chart = workflow["jobs"]["publish-orchestrator-chart"]
     package_step = next(
         step for step in publish_chart["steps"] if step.get("id") == "package-and-push")
-    assert 'package_version="0.0.0-main"' in package_step["run"]
-    assert 'helm package helm/orchestrator --version "$package_version"' in package_step["run"]
+    assert 'package_version="0.0.0-sha.${GITHUB_SHA}"' in package_step["run"]
+    assert 'helm package "$chart_source" --version "$package_version"' in package_step["run"]
+    assert 'org.opencontainers.image.revision' in package_step["run"]
+    assert "Refusing to overwrite existing commit-addressed chart version" in package_step["run"]
     assert 'oras tag "ghcr.io/utopikprompt/codefactory/orchestrator:$package_version" main' \
         in package_step["run"]
-    assert "orchestrator:main" in package_step["run"]
     assert any(step.get("name") == "Set up ORAS" for step in publish_chart["steps"])
     login_step = next(
         step for step in publish_chart["steps"] if step.get("name") == "Log in to GHCR")
     assert 'oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin' \
         in login_step["run"]
 
+    release_manifest = workflow["jobs"]["release-manifest"]
+    assert release_manifest["needs"] == ["publish-orchestrator-chart", "build-images"]
+    assemble = next(
+        step for step in release_manifest["steps"]
+        if step.get("name") == "Assemble and validate complete product manifest")
+    assert 'expected = {"gateway", "management", "supervisor", "worker"}' in assemble["run"]
+    assert "@sha256:[a-f0-9]{64}" in assemble["run"]
+    assert any(step.get("name") == "Write exact chart manifest" for step in publish_chart["steps"])
+
     build_images = workflow["jobs"]["build-images"]
     image_step = next(
         step for step in build_images["steps"] if step.get("name") == "Build and push")
     assert "codefactory-${{ matrix.service }}:main" in image_step["with"]["tags"]
+    assert any(step.get("name") == "Write exact image manifest" for step in build_images["steps"])
 
 
 @pytest.mark.parametrize("create", [False, True])
