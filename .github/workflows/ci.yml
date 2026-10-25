@@ -193,7 +193,7 @@ jobs:
         id: package-and-push
         shell: bash
         run: |
-          helm package helm/orchestrator --destination "$RUNNER_TEMP"
+          helm package helm/orchestrator --version main --destination "$RUNNER_TEMP"
           package="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'orchestrator-*.tgz' -print -quit)"
           if [[ -z "$package" ]]; then
             echo "Packaged orchestrator chart not found" >&2
@@ -246,6 +246,7 @@ jobs:
           context: ./orchestrator/${{ matrix.service }}
           push: ${{ env.PUBLISH_IMAGES == 'true' }}
           tags: |
+            ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:main
             ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:${{ needs.set-image-tag.outputs.tag }}
             ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:${{ github.sha }}
             ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:latest

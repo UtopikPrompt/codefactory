@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 CHART = Path(__file__).resolve().parents[1] / "helm/orchestrator"
+WORKFLOW = CHART.parents[1] / ".github/workflows/ci.yml"
 
 
 def test_namespace_is_not_a_chart_value():
@@ -12,6 +13,19 @@ def test_namespace_is_not_a_chart_value():
         assert "namespace" not in yaml.safe_load((CHART / filename).read_text())
     schema = yaml.safe_load((CHART / "values.schema.json").read_text())
     assert "namespace" not in schema["properties"]
+
+
+def test_main_packages_are_published_with_mutable_main_tags():
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    publish_chart = workflow["jobs"]["publish-orchestrator-chart"]
+    package_step = next(
+        step for step in publish_chart["steps"] if step.get("id") == "package-and-push")
+    assert "helm package helm/orchestrator --version main" in package_step["run"]
+
+    build_images = workflow["jobs"]["build-images"]
+    image_step = next(
+        step for step in build_images["steps"] if step.get("name") == "Build and push")
+    assert "codefactory-${{ matrix.service }}:main" in image_step["with"]["tags"]
 
 
 @pytest.mark.parametrize("create", [False, True])
