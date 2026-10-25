@@ -37,10 +37,10 @@ fixed validation command. They are not required for each repository:
 ```yaml
 supervisor:
   config:
-    judge-url: "https://inference.local/v1"
+    judge-url: "http://judge.inference.svc.cluster.local:8000/v1"
     judge-model: "your-configured-judge-model"
 worker:
-  coderUrl: "https://inference.local/v1"
+  coderUrl: "http://coder.inference.svc.cluster.local:8000/v1"
   worker-model: "your-configured-coder-model"
   judgeAcceptThreshold: 0.8
   repoPolicies:

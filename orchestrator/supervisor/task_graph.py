@@ -155,7 +155,7 @@ def mock_worker_executor(state, worker_count: int, roles, supervisor):
 async def node_evaluate(state, supervisor):
     supervisor.logger.info(f"[{state['task_id']}] Evaluating {len(state['worker_outputs'])} outputs")
     state["status"] = "evaluating"
-    judge_url = supervisor.os.getenv("JUDGE_URL", "https://inference.local/v1")
+    judge_url = supervisor.os.getenv("JUDGE_URL", "http://judge.inference.svc.cluster.local:8000/v1")
     judge_model = supervisor.os.getenv("JUDGE_MODEL", "qwen2.5-coder-7b-instruct-q4-km@32k")
     evaluation_prompts = [{"worker_id": output["worker_id"],
                            "prompt": build_evaluation_prompt(state["issue_title"], output["worker_id"], output.get("patch", ""))}

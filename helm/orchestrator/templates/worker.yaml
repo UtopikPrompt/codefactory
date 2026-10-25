@@ -2,10 +2,10 @@
 Worker: ConfigMap orchestrator-config + Job coder-worker.
 Faithful to orchestrator/worker.yaml (ConfigMap + Job coder-worker).
 */}}
-{{- $judgeUrl := default "http://llama-server-args-gpu1.inference.svc.cluster.local:8000/v1" (index .Values.supervisor.config "judge-url") -}}
+{{- $judgeUrl := default "http://judge.inference.svc.cluster.local:8000/v1" (index .Values.supervisor.config "judge-url") -}}
 {{- $coderUrl := default (index .Values.supervisor.config "coder-url") .Values.worker.coderUrl -}}
-{{- $coderNative := eq $coderUrl "http://llama-server-args-gpu0.inference.svc.cluster.local:8000/v1" -}}
-{{- $judgeNative := eq $judgeUrl "http://llama-server-args-gpu1.inference.svc.cluster.local:8000/v1" -}}
+{{- $coderNative := eq $coderUrl "http://coder.inference.svc.cluster.local:8000/v1" -}}
+{{- $judgeNative := eq $judgeUrl "http://judge.inference.svc.cluster.local:8000/v1" -}}
 {{- if kindIs "bool" .Values.worker.coderNativeDownload -}}
 {{- $coderNative = .Values.worker.coderNativeDownload -}}
 {{- end -}}

@@ -28,7 +28,7 @@ WORKDIR /app
 ENV ACCEPTANCE_THRESHOLD="0.7"
 ENV ACCEPTOR_URL="http://code-factory.local:8000"
 ENV JUDGE_MODEL="qwen2.5-coder-7b-instruct-q4-km@32k"
-ENV JUDGE_URL="https://inference.local/v1"
+ENV JUDGE_URL="http://judge.inference.svc.cluster.local:8000/v1"
 ENV WORKER_COUNT="2"
 
 # System dependencies (CPU-only toolchain).
