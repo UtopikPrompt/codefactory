@@ -26,6 +26,10 @@ def test_main_packages_are_published_with_mutable_main_tags():
         in package_step["run"]
     assert "orchestrator:main" in package_step["run"]
     assert any(step.get("name") == "Set up ORAS" for step in publish_chart["steps"])
+    login_step = next(
+        step for step in publish_chart["steps"] if step.get("name") == "Log in to GHCR")
+    assert 'oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin' \
+        in login_step["run"]
 
     build_images = workflow["jobs"]["build-images"]
     image_step = next(
