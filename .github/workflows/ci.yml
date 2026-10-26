@@ -219,7 +219,7 @@ jobs:
     env:
       CHART_NAME: orchestrator
       CHART_OCI_REPOSITORY: ghcr.io/utopikprompt/codefactory
-      CHART_ALIAS: main
+      CHART_ALIAS: dev
     steps:
       - name: Select chart version
         id: chart-version
