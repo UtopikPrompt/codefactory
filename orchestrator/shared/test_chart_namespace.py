@@ -302,7 +302,7 @@ def test_chart_publish_gate(event, ref, enabled, validated):
 
 
 @pytest.mark.parametrize("ref,version", [
-    ("refs/heads/main", "0.0.0-sha." + "a" * 40),
+    ("refs/heads/main", "0.0.0-dev"),
     ("refs/tags/v1.2.3", "1.2.3"), ("refs/tags/1.2.3", "1.2.3"),
     ("refs/tags/v0.0.0", "0.0.0"), ("refs/tags/10.20.30", "10.20.30"),
     ("refs/tags/v0.0.0-dev", "0.0.0-dev"), ("refs/tags/1.2.3-rc.1", "1.2.3-rc.1"),
@@ -393,7 +393,7 @@ else:
         "COMMAND_LOG": str(log), "PATH": f"{Path(sys.executable).parent}:{binaries}:{os.environ['PATH']}",
         "GITHUB_REF": "refs/tags/v1.2.3" if tagged else "refs/heads/main",
         "SOURCE_COMMIT": "a" * 40, "SOURCE_CHART_VERSION": source_version,
-        "PACKAGE_VERSION": "1.2.3" if tagged else source_version,
+        "PACKAGE_VERSION": "1.2.3" if tagged else "0.0.0-dev",
         "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
     }
     result = subprocess.run(

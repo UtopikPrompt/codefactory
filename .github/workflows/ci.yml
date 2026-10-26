@@ -239,7 +239,7 @@ jobs:
               exit 1
             fi
           elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
-            chart_version="$source_version"
+            chart_version="0.0.0-dev"
           else
             echo "Unsupported chart publication ref: $GITHUB_REF" >&2
             exit 1
