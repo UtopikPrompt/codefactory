@@ -360,10 +360,16 @@ jobs:
             exit 1
           fi
           if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            helm package "$chart_source" --version "$PACKAGE_VERSION" --destination "$package_dir"
+            helm push "$package_dir/$CHART_NAME-$PACKAGE_VERSION.tgz" "oci://$CHART_OCI_REPOSITORY"
             oras tag "$CHART_OCI_REPOSITORY/$CHART_NAME@$chart_digest" "$CHART_ALIAS"
           fi
           {
-            printf 'Published immutable chart version: `%s`\n\n' "$PACKAGE_VERSION"
+            if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+              printf 'Published development chart version: `%s`\n\n' "$PACKAGE_VERSION"
+            else
+              printf 'Published immutable chart version: `%s`\n\n' "$PACKAGE_VERSION"
+            fi
             printf 'Source chart version: `%s`\n\n' "$SOURCE_CHART_VERSION"
             printf 'Source digest: `%s`\n' "$chart_digest"
           } >> "$GITHUB_STEP_SUMMARY"

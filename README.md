@@ -63,8 +63,9 @@ eligible, with publication still opt-in. Tags must be exact SemVer versions
 with an optional leading `v`; prerelease identifiers follow SemVer and numeric
 identifiers cannot have leading zeroes. Release versions are immutable and
 existing releases are never overwritten. The infra Dev profile pins the exact
-prerelease version `0.0.0-dev`, distinct from the mutable OCI `dev` alias, which
-main updates to the verified source digest. Tag releases never move `dev`.
+prerelease version `0.0.0-dev`, which main republishes after source verification.
+This is distinct from the mutable OCI `dev` alias, which main updates to the
+verified source digest. Tag releases never move `dev`.
 Main also retains the immutable source chart `0.0.0-sha.<full-commit>`.
 Every publication retains that commit-addressed source chart; an existing source
 version is reused only if its revision annotation matches the requested commit.

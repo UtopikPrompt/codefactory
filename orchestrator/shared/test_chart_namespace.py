@@ -334,7 +334,7 @@ def test_chart_version_selection(tmp_path, ref, version):
 
 @pytest.mark.parametrize("tagged", [False, True])
 @pytest.mark.parametrize("scenario", [
-    "fresh", "same", "mismatch", "release-exists", "pull-error", "bad-digest", "bad-revision", "digest-mismatch",
+    "fresh", "same", "dev-exists", "mismatch", "release-exists", "pull-error", "bad-digest", "bad-revision", "digest-mismatch",
 ])
 def test_chart_publisher_versions_and_verification(tmp_path, tagged, scenario):
     workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
@@ -385,6 +385,8 @@ else:
     for command in ("helm", "oras"):
         (binaries / command).symlink_to(stub)
     source_version = "0.0.0-sha." + "a" * 40
+    if scenario == "dev-exists":
+        (tmp_path / "pushed-0.0.0-dev").touch()
     output = tmp_path / "output"
     log = tmp_path / "commands.jsonl"
     environment = {
@@ -400,7 +402,7 @@ else:
         ["bash", "-euo", "pipefail", "-c", steps["Package and publish chart"]["run"]],
         env=environment, check=False, capture_output=True, text=True,
     )
-    succeeds = scenario in ("fresh", "same") or (scenario == "release-exists" and not tagged)
+    succeeds = scenario in ("fresh", "same", "dev-exists") or (scenario == "release-exists" and not tagged)
     assert (result.returncode == 0) == succeeds, result.stdout + result.stderr
     commands = [json.loads(line) for line in log.read_text().splitlines()]
     pushes = [command for command in commands if command[:2] == ["helm", "push"]]
@@ -412,19 +414,30 @@ else:
         assert not pushes
     if not succeeds:
         assert not output.exists()
+        assert not (tmp_path / "summary.md").exists()
+        assert not any(Path(command[2]).name.endswith("-0.0.0-dev.tgz") for command in pushes)
         return
-    assert len(pushes) == int(tagged) + int(scenario != "same")
-    expected_versions = (["1.2.3"] if tagged else []) + ([source_version] if scenario != "same" else [])
+    assert len(pushes) == 1 + int(scenario != "same")
+    expected_versions = ((["1.2.3"] if tagged else [])
+                         + ([source_version] if scenario != "same" else [])
+                         + ([] if tagged else ["0.0.0-dev"]))
     assert [Path(command[2]).name for command in pushes] == [
         f"{job['env']['CHART_NAME']}-{version}.tgz" for version in expected_versions
     ]
     assert all(command[3] == f"oci://{job['env']['CHART_OCI_REPOSITORY']}" for command in pushes)
+    if not tagged:
+        resolution = next(command for command in commands if command[:2] == ["oras", "resolve"])
+        assert commands.index(resolution) < commands.index(pushes[-1]) < commands.index(aliases[0])
+    else:
+        assert not any("0.0.0-dev" in argument for command in commands for argument in command)
     assert yaml.safe_load((tmp_path / "chart-source/Chart.yaml").read_text())["annotations"][
         "org.opencontainers.image.revision"
     ] == "a" * 40
     assert not output.exists()
     summary = (tmp_path / "summary.md").read_text()
-    assert f"Published immutable chart version: `{environment['PACKAGE_VERSION']}`" in summary
+    label = "immutable" if tagged else "development"
+    assert f"Published {label} chart version: `{environment['PACKAGE_VERSION']}`" in summary
+    assert ("Published immutable chart version:" in summary) == tagged
     assert f"Source chart version: `{source_version}`" in summary
     assert f"Source digest: `sha256:{'b' * 64}`" in summary
 
