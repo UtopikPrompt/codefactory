@@ -53,8 +53,9 @@ inference builds its locked NVIDIA dependency and uses strict lint.
 Code Factory additionally validates four service image builds. Image publication
 requires `GHCR_PUBLISH_ENABLED=true`; chart publication separately requires
 `HELM_CHART_PUBLISH_ENABLED=true`. Image publication remains restricted to
-main-branch pushes or manual runs on main. Image coordinates, tags, build
-behavior, and source revision labels are unchanged.
+main-branch pushes or manual runs on main. Main-branch image builds publish the
+`dev` tag; the short-SHA, full-SHA, and `latest` tags are retained. Image
+coordinates, build behavior, and source revision labels are unchanged.
 
 Both repositories use the same chart publication policy after lint, tests, and
 chart validation succeed: push or manual runs on main or version tags are

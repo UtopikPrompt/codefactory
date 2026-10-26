@@ -413,7 +413,7 @@ jobs:
           context: ./orchestrator/${{ matrix.service }}
           push: ${{ env.PUBLISH_IMAGES == 'true' }}
           tags: |
-            ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:main
+            ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:dev
             ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:${{ needs.set-image-tag.outputs.tag }}
             ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:${{ github.sha }}
             ${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:latest
