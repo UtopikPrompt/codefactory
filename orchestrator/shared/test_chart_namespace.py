@@ -404,7 +404,7 @@ else:
     aliases = [command for command in commands if command[:2] == ["oras", "tag"]]
     assert len(aliases) == int(succeeds and not tagged)
     if aliases:
-        assert aliases[0] == ["oras", "tag", f"{job['env']['CHART_OCI_REPOSITORY']}/{job['env']['CHART_NAME']}@sha256:" + "b" * 64, "main"]
+        assert aliases[0] == ["oras", "tag", f"{job['env']['CHART_OCI_REPOSITORY']}/{job['env']['CHART_NAME']}@sha256:" + "b" * 64, "dev"]
     if scenario in ("pull-error", "mismatch") and not tagged or scenario == "release-exists" and tagged:
         assert not pushes
     if not succeeds:
@@ -460,7 +460,7 @@ def test_chart_publication_is_commit_addressed_and_refuses_overwrite():
     assert image_step["with"]["labels"] == "org.opencontainers.image.revision=${{ github.sha }}\n"
     assert image_step["with"]["tags"].splitlines() == [
         "${{ env.REGISTRY }}/utopikprompt/codefactory-${{ matrix.service }}:" + tag
-        for tag in ("main", "${{ needs.set-image-tag.outputs.tag }}", "${{ github.sha }}", "latest")
+        for tag in ("dev", "${{ needs.set-image-tag.outputs.tag }}", "${{ github.sha }}", "latest")
     ]
 
 
