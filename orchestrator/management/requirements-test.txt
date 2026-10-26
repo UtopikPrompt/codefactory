@@ -1,0 +1,3 @@
+-r requirements.txt
+-r ../gateway/requirements.txt
+pytest

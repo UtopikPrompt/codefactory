@@ -3,28 +3,41 @@ name: CI Pipeline
 on:
   push:
     branches: [main]
+    tags: ["v*", "[0-9]*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
+  PYTHON_PATH: orchestrator/
+  TEST_PATH_FORMAT: orchestrator/{0}
+  TEST_REQUIREMENTS_FORMAT: orchestrator/{0}/requirements-test.txt
+  CHART_PATH: helm/orchestrator
+  CHART_RELEASE: orchestrator
+  CHART_DEPENDENCIES: "false"
+  CHART_REPOSITORY_NAME: ""
+  CHART_REPOSITORY_URL: ""
+  CHART_STRICT: "false"
+  CHART_VALUES_FILE: helm/orchestrator/example.values.yaml
+  CHART_SET_VALUES: management.enabled=true
+  CHART_EXPECTED_IMAGES: |
+    ghcr.io/utopikprompt/codefactory-gateway:latest
+    ghcr.io/utopikprompt/codefactory-management:latest
+    ghcr.io/utopikprompt/codefactory-supervisor:latest
+    ghcr.io/utopikprompt/codefactory-worker:latest
   REGISTRY: ghcr.io
   PUBLISH_IMAGES: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.GHCR_PUBLISH_ENABLED == 'true' }}
 
 jobs:
-  set-image-tag:
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-    steps:
-      - name: Set image tag
-        id: tag
-        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
   lint:
+    name: Lint Python
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -32,49 +45,62 @@ jobs:
           python-version: "3.12"
 
       - name: Install ruff
-        run: pip install ruff
+        shell: bash
+        run: python -m pip install ruff
 
       - name: Run linting
-        run: ruff check orchestrator/
+        shell: bash
+        run: ruff check "$PYTHON_PATH"
 
   test:
+    name: test-${{ matrix.slice }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [supervisor, worker, gateway, management, shared]
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - name: Set up Helm for chart regressions
+      - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Prepare Helm dependencies
+        shell: bash
+        run: |
+          if [[ "$CHART_DEPENDENCIES" == true ]]; then
+            helm repo add "$CHART_REPOSITORY_NAME" "$CHART_REPOSITORY_URL"
+            helm dependency build "$CHART_PATH"
+          fi
+
       - name: Install dependencies
+        env:
+          TEST_REQUIREMENTS: ${{ format(env.TEST_REQUIREMENTS_FORMAT, matrix.slice) }}
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          # Install the full union of runtime dependencies declared in each
-          # sub-package requirements file (supervisor/worker/gateway/management).
-          # This guarantees prometheus_client, pydantic, langchain-core,
-          # langchain-sdk, tenacity, fastapi, uvicorn, httpx, openai, etc.
-          pip install -r orchestrator/supervisor/requirements.txt \
-            -r orchestrator/worker/requirements.txt \
-            -r orchestrator/gateway/requirements.txt \
-            -r orchestrator/management/requirements.txt
-          # pytest is not part of any requirements file, so install it
-          # separately to guarantee the `pytest` binary is on PATH.
-          pip install pytest
+          python -m pip install -r "$TEST_REQUIREMENTS"
 
       - name: Run tests
         id: pytest
+        env:
+          TEST_PATH: ${{ format(env.TEST_PATH_FORMAT, matrix.slice) }}
+        shell: bash
         run: |
           mkdir -p test-results
-          pytest orchestrator/ -v -ra --durations=10 --junitxml=test-results/pytest.xml
+          pytest "$TEST_PATH" -v -ra --durations=10 --junitxml=test-results/pytest.xml
 
       - name: Summarize test results
         if: always()
         env:
           TEST_OUTCOME: ${{ steps.pytest.outcome }}
+          TEST_ARTIFACT: ${{ format('python-test-results-{0}', matrix.slice) }}
         shell: python
         run: |
           import html
@@ -124,7 +150,7 @@ jobs:
                 lines.append(f"| {name} | {label(detail.tag)} | {label(detail.get('message', 'See XML report'))} |")
               if len(issues) > 30:
                 lines += ["", f"Showing 30 of {len(issues)} results; see the XML artifact for the rest."]
-            lines += ["", "Full results are available in the **python-test-results** artifact on this run."]
+            lines += ["", f"Full results are available in the **{label(os.environ['TEST_ARTIFACT'])}** artifact on this run."]
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
             summary.write("\n".join(lines) + "\n")
 
@@ -132,43 +158,57 @@ jobs:
         if: always() && hashFiles('test-results/pytest.xml') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: python-test-results
+          name: ${{ format('python-test-results-{0}', matrix.slice) }}
           path: test-results/pytest.xml
           retention-days: 14
 
   chart-validation:
+    name: Validate Helm chart
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Lint and render orchestrator chart
+      - name: Prepare Helm dependencies
+        shell: bash
         run: |
-          helm lint helm/orchestrator --values helm/orchestrator/example.values.yaml
-          rendered="$(helm template orchestrator helm/orchestrator \
-            --namespace orchestrator \
-            --values helm/orchestrator/example.values.yaml \
-            --set management.enabled=true)"
-          for image in \
-            ghcr.io/utopikprompt/codefactory-gateway:latest \
-            ghcr.io/utopikprompt/codefactory-management:latest \
-            ghcr.io/utopikprompt/codefactory-supervisor:latest \
-            ghcr.io/utopikprompt/codefactory-worker:latest; do
+          if [[ "$CHART_DEPENDENCIES" == true ]]; then
+            helm repo add "$CHART_REPOSITORY_NAME" "$CHART_REPOSITORY_URL"
+            helm dependency build "$CHART_PATH"
+          fi
+
+      - name: Lint and render Helm chart
+        shell: bash
+        run: |
+          values_args=()
+          [[ -z "$CHART_VALUES_FILE" ]] || values_args+=(--values "$CHART_VALUES_FILE")
+          lint_args=()
+          [[ "$CHART_STRICT" != true ]] || lint_args+=(--strict)
+          helm lint "$CHART_PATH" "${lint_args[@]}" "${values_args[@]}"
+          render_args=()
+          while IFS= read -r setting; do
+            [[ -z "$setting" ]] || render_args+=(--set "$setting")
+          done <<< "$CHART_SET_VALUES"
+          rendered="$(helm template "$CHART_RELEASE" "$CHART_PATH" \
+            --namespace "$CHART_RELEASE" "${values_args[@]}" "${render_args[@]}")"
+          while IFS= read -r image; do
+            [[ -n "$image" ]] || continue
             grep -Fq "$image" <<< "$rendered" || {
               echo "Expected image missing from chart render: $image" >&2
               exit 1
             }
-          done
+          done <<< "$CHART_EXPECTED_IMAGES"
 
-  publish-orchestrator-chart:
-    name: Publish orchestrator Helm chart
+  publish-chart:
+    name: Publish Helm chart
     if: >-
       ${{
         success() &&
         (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-        github.ref == 'refs/heads/main' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) &&
         vars.HELM_CHART_PUBLISH_ENABLED == 'true'
       }}
     needs: [lint, test, chart-validation]
@@ -176,40 +216,84 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      chart_digest: ${{ steps.package-and-push.outputs.digest }}
+    env:
+      CHART_NAME: orchestrator
+      CHART_OCI_REPOSITORY: ghcr.io/utopikprompt/codefactory
+      CHART_ALIAS: main
     steps:
-      - uses: actions/checkout@v7
+      - name: Select chart version
+        id: chart-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid source commit" >&2
+            exit 1
+          fi
+          source_version="0.0.0-sha.${GITHUB_SHA}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            chart_version="${GITHUB_REF#refs/tags/}"
+            chart_version="${chart_version#v}"
+            if [[ ! "$chart_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Release tag must be vMAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH" >&2
+              exit 1
+            fi
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            chart_version="$source_version"
+          else
+            echo "Unsupported chart publication ref: $GITHUB_REF" >&2
+            exit 1
+          fi
+          echo "package_version=$chart_version" >> "$GITHUB_OUTPUT"
+          echo "source_version=$source_version" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Prepare Helm dependencies
+        shell: bash
+        run: |
+          if [[ "$CHART_DEPENDENCIES" == true ]]; then
+            helm repo add "$CHART_REPOSITORY_NAME" "$CHART_REPOSITORY_URL"
+            helm dependency build "$CHART_PATH"
+          fi
+
       - name: Set up ORAS
         uses: oras-project/setup-oras@v1
 
-      - uses: actions/setup-python@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Install chart metadata tool
+        shell: bash
         run: python -m pip install "PyYAML>=6,<7"
 
       - name: Log in to GHCR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           echo "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
-      - name: Package and push chart
-        id: package-and-push
+      - name: Package and publish chart
+        env:
+          PACKAGE_VERSION: ${{ steps.chart-version.outputs.package_version }}
+          SOURCE_CHART_VERSION: ${{ steps.chart-version.outputs.source_version }}
+          SOURCE_COMMIT: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          package_version="0.0.0-sha.${GITHUB_SHA}"
           chart_source="$RUNNER_TEMP/chart-source"
-          cp -a helm/orchestrator "$chart_source"
-          python - "$chart_source/Chart.yaml" "$GITHUB_SHA" <<'PY'
+          package_dir="$RUNNER_TEMP/chart-package"
+          mkdir -p "$package_dir"
+          cp -a "$CHART_PATH" "$chart_source"
+          python - "$chart_source/Chart.yaml" "$SOURCE_COMMIT" <<'PY'
           import sys
           from pathlib import Path
           import yaml
@@ -219,70 +303,84 @@ jobs:
           chart.setdefault("annotations", {})["org.opencontainers.image.revision"] = sys.argv[2]
           chart_path.write_text(yaml.safe_dump(chart, sort_keys=False), encoding="utf-8")
           PY
-          helm package "$chart_source" --version "$package_version" --destination "$RUNNER_TEMP"
-          package="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name 'orchestrator-*.tgz' -print -quit)"
-          if [[ -z "$package" ]]; then
-            echo "Packaged orchestrator chart not found" >&2
+
+          chart_ref="oci://$CHART_OCI_REPOSITORY/$CHART_NAME"
+          publish_chart() {
+            local version="$1"
+            local kind="$2"
+            local package_version="$version"
+            local existing_dir="$RUNNER_TEMP/existing-$version"
+            local pull_log="$RUNNER_TEMP/pull-$version.log"
+            mkdir -p "$existing_dir"
+            if helm pull "$chart_ref" --version "$version" --destination "$existing_dir" >"$pull_log" 2>&1; then
+              if [[ "$kind" == release ]]; then
+                echo "Refusing to overwrite existing released chart version $version" >&2
+                exit 1
+              fi
+              local existing_chart="$existing_dir/$CHART_NAME-$version.tgz"
+              local existing_commit
+              existing_commit="$(helm show chart "$existing_chart" | python -c 'import sys,yaml; print(yaml.safe_load(sys.stdin).get("annotations", {}).get("org.opencontainers.image.revision", ""))')"
+              if [[ "$existing_commit" != "$SOURCE_COMMIT" ]]; then
+                echo "Existing source chart $version does not map to $SOURCE_COMMIT" >&2
+                exit 1
+              fi
+              echo "Source chart $version already maps to $SOURCE_COMMIT; keeping it unchanged"
+              return
+            fi
+            if ! grep -Eqi 'not found|manifest unknown|404' "$pull_log"; then
+              cat "$pull_log" >&2
+              echo "Could not safely determine whether chart version $version already exists" >&2
+              exit 1
+            fi
+            helm package "$chart_source" --version "$package_version" --destination "$package_dir"
+            helm push "$package_dir/$CHART_NAME-$package_version.tgz" "oci://$CHART_OCI_REPOSITORY"
+          }
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            publish_chart "$PACKAGE_VERSION" release
+          fi
+          publish_chart "$SOURCE_CHART_VERSION" source
+
+          source_chart_dir="$RUNNER_TEMP/source-chart"
+          mkdir -p "$source_chart_dir"
+          pull_output="$(helm pull "$chart_ref" --version "$SOURCE_CHART_VERSION" --destination "$source_chart_dir" 2>&1)"
+          chart_digest="$(sed -n 's/^Digest: //p' <<< "$pull_output")"
+          if [[ ! "$chart_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Could not determine exact published source chart digest" >&2
             exit 1
           fi
-          chart_ref="oci://ghcr.io/utopikprompt/codefactory/orchestrator"
-          existing_dir="$RUNNER_TEMP/existing-chart"
-          pull_log="$RUNNER_TEMP/existing-chart-pull.log"
-          mkdir -p "$existing_dir"
-          if helm pull "$chart_ref" --version "$package_version" --destination "$existing_dir" >"$pull_log" 2>&1; then
-            echo "Refusing to overwrite existing commit-addressed chart version $package_version" >&2
+          source_package="$source_chart_dir/$CHART_NAME-$SOURCE_CHART_VERSION.tgz"
+          source_revision="$(helm show chart "$source_package" | python -c 'import sys,yaml; print(yaml.safe_load(sys.stdin).get("annotations", {}).get("org.opencontainers.image.revision", ""))')"
+          if [[ "$source_revision" != "$SOURCE_COMMIT" ]]; then
+            echo "Published source chart does not match the requested source commit" >&2
             exit 1
           fi
-          if ! grep -Eqi 'not found|manifest unknown|404' "$pull_log"; then
-            cat "$pull_log" >&2
-            echo "Could not safely determine whether chart version $package_version exists" >&2
+          source_ref="$CHART_OCI_REPOSITORY/$CHART_NAME:$SOURCE_CHART_VERSION"
+          if [[ "$(oras resolve "$source_ref")" != "$chart_digest" ]]; then
+            echo "Published source chart digest does not match the registry digest" >&2
             exit 1
           fi
-          push_output="$RUNNER_TEMP/helm-push-output.txt"
-          helm push "$package" oci://ghcr.io/utopikprompt/codefactory | tee "$push_output"
-          digest="$(sed -n 's/^Digest: //p' "$push_output")"
-          if [[ ! "$digest" =~ ^sha256:[[:xdigit:]]{64}$ ]]; then
-            echo "Helm push did not return a valid chart digest" >&2
-            exit 1
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            oras tag "$CHART_OCI_REPOSITORY/$CHART_NAME@$chart_digest" "$CHART_ALIAS"
           fi
-          oras tag "ghcr.io/utopikprompt/codefactory/orchestrator:$package_version" main
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "version=$package_version" >> "$GITHUB_OUTPUT"
           {
-            printf 'Published immutable chart version: `%s`\n\n' "$package_version"
-            printf 'Digest: `%s`\n' "$digest"
+            printf 'Published immutable chart version: `%s`\n\n' "$PACKAGE_VERSION"
+            printf 'Source chart version: `%s`\n\n' "$SOURCE_CHART_VERSION"
+            printf 'Source digest: `%s`\n' "$chart_digest"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Write exact chart manifest
-        env:
-          CHART_DIGEST: ${{ steps.package-and-push.outputs.digest }}
-          CHART_VERSION: ${{ steps.package-and-push.outputs.version }}
-          SOURCE_COMMIT: ${{ github.sha }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          manifest = {
-              "sourceCommit": os.environ["SOURCE_COMMIT"],
-              "chart": "oci://ghcr.io/utopikprompt/codefactory/orchestrator",
-              "chartVersion": os.environ["CHART_VERSION"],
-              "chartDigest": os.environ["CHART_DIGEST"],
-          }
-          Path(os.environ["RUNNER_TEMP"], "codefactory-chart.json").write_text(
-              json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8",
-          )
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: codefactory-chart-${{ github.sha }}
-          path: ${{ runner.temp }}/codefactory-chart.json
-          if-no-files-found: error
-          retention-days: 90
+  set-image-tag:
+    name: Select image tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Set image tag
+        id: tag
+        shell: bash
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   build-images:
+    name: Build container images
     needs: [lint, test, chart-validation, set-image-tag]
     runs-on: ubuntu-latest
     strategy:
@@ -292,7 +390,8 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -300,7 +399,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Login to GHCR
+      - name: Log in to GHCR
         if: env.PUBLISH_IMAGES == 'true'
         uses: docker/login-action@v4
         with:
@@ -309,7 +408,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        id: build-image
         uses: docker/build-push-action@v7
         with:
           context: ./orchestrator/${{ matrix.service }}
@@ -322,135 +420,28 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Write exact image manifest
-        if: env.PUBLISH_IMAGES == 'true'
-        env:
-          IMAGE_DIGEST: ${{ steps.build-image.outputs.digest }}
-          IMAGE_SERVICE: ${{ matrix.service }}
-          SOURCE_COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
-          printf '{"sourceCommit":"%s","service":"%s","image":"ghcr.io/utopikprompt/codefactory-%s@%s"}\n' \
-            "$SOURCE_COMMIT" "$IMAGE_SERVICE" "$IMAGE_SERVICE" "$IMAGE_DIGEST" \
-            > "$RUNNER_TEMP/codefactory-image-${IMAGE_SERVICE}.json"
-
-      - uses: actions/upload-artifact@v4
-        if: env.PUBLISH_IMAGES == 'true'
-        with:
-          name: codefactory-image-${{ matrix.service }}
-          path: ${{ runner.temp }}/codefactory-image-${{ matrix.service }}.json
-          if-no-files-found: error
-          retention-days: 90
-
-  release-manifest:
-    name: Assemble exact Code Factory release manifest
-    if: >-
-      ${{
-        github.ref == 'refs/heads/main' &&
-        vars.GHCR_PUBLISH_ENABLED == 'true' &&
-        vars.HELM_CHART_PUBLISH_ENABLED == 'true' &&
-        needs.publish-orchestrator-chart.result == 'success' &&
-        needs.build-images.result == 'success'
-      }}
-    needs: [publish-orchestrator-chart, build-images]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: codefactory-chart-${{ github.sha }}
-          path: ${{ runner.temp }}/codefactory-manifests
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: codefactory-image-*
-          path: ${{ runner.temp }}/codefactory-manifests
-          merge-multiple: true
-
-      - name: Assemble and validate complete product manifest
-        env:
-          MANIFEST_DIR: ${{ runner.temp }}/codefactory-manifests
-          SOURCE_COMMIT: ${{ github.sha }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          directory = Path(os.environ["MANIFEST_DIR"])
-          source_commit = os.environ["SOURCE_COMMIT"]
-          chart = json.loads((directory / "codefactory-chart.json").read_text(encoding="utf-8"))
-          images = {}
-          for path in sorted(directory.glob("codefactory-image-*.json")):
-              record = json.loads(path.read_text(encoding="utf-8"))
-              if record.get("sourceCommit") != source_commit or record.get("service") in images:
-                  raise SystemExit("Image manifest source or service identity mismatch")
-              service = record["service"]
-              if service not in {"gateway", "management", "supervisor", "worker"}:
-                  raise SystemExit("Unexpected Code Factory image service")
-              if not re.fullmatch(r"ghcr\.io/utopikprompt/codefactory-" + service + r"@sha256:[a-f0-9]{64}", record["image"]):
-                  raise SystemExit("Image manifest is not pinned to an approved digest")
-              images[service] = record["image"]
-          expected = {"gateway", "management", "supervisor", "worker"}
-          if set(images) != expected or chart.get("sourceCommit") != source_commit:
-              raise SystemExit("Complete chart and all four image manifests are required")
-          manifest = {
-              "product": "codefactory",
-              **chart,
-              "images": images,
-          }
-          if (not re.fullmatch(r"[0-9a-f]{40}", source_commit)
-                  or not re.fullmatch(r"sha256:[a-f0-9]{64}", manifest["chartDigest"])):
-              raise SystemExit("Release manifest source or chart digest is invalid")
-          (directory / "codefactory-release-manifest.json").write_text(
-              json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8",
-          )
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: codefactory-release-${{ github.sha }}
-          path: ${{ runner.temp }}/codefactory-manifests/codefactory-release-manifest.json
-          if-no-files-found: error
-          retention-days: 90
-
   summary:
     name: CI Summary
     if: always()
-    needs: [set-image-tag, lint, test, chart-validation, build-images]
+    needs:
+      [lint, test, chart-validation, publish-chart, set-image-tag, build-images]
     runs-on: ubuntu-latest
     steps:
       - name: Summarize pipeline
         env:
-          TAG_RESULT: ${{ needs.set-image-tag.result }}
-          LINT_RESULT: ${{ needs.lint.result }}
-          TEST_RESULT: ${{ needs.test.result }}
-          CHART_RESULT: ${{ needs.chart-validation.result }}
-          BUILD_RESULT: ${{ needs.build-images.result }}
-          IMAGE_TAG: ${{ needs.set-image-tag.outputs.tag }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
           SOURCE_COMMIT: ${{ github.sha }}
+        shell: python
         run: |
-          {
-            printf '## CI Overview\n\n'
-            printf '| Job | Result |\n| --- | --- |\n'
-            printf '| Image tag | %s |\n' "$TAG_RESULT"
-            printf '| Ruff lint | %s |\n' "$LINT_RESULT"
-            printf '| Python tests | %s |\n' "$TEST_RESULT"
-            printf '| Orchestrator chart | %s |\n' "$CHART_RESULT"
-            printf '| Container builds (all services) | %s |\n\n' "$BUILD_RESULT"
-            printf 'Commit: `%s`\n\n' "$GITHUB_SHA"
-            printf '[Run logs and artifacts](%s/%s/actions/runs/%s)\n\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-            if [[ "$BUILD_RESULT" == "success" ]]; then
-              if [[ "$PUBLISH_IMAGES" == "true" ]]; then
-                printf 'Images published with short-SHA tag `%s`, full-commit tag `%s`, and `latest`:\n\n' "$IMAGE_TAG" "$SOURCE_COMMIT"
-              else
-                printf 'Images built for validation only; nothing was published:\n\n'
-              fi
-              for service in supervisor worker gateway management; do
-                printf -- '- `%s/utopikprompt/codefactory-%s:%s`\n' "$REGISTRY" "$service" "$IMAGE_TAG"
-              done
-            else
-              printf 'Image builds did not all succeed. Check individual matrix jobs before deploying.\n'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+
+          results = json.loads(os.environ["JOB_RESULTS"])
+          lines = ["## CI Overview", "", "| Job | Result |", "| --- | --- |"]
+          for job, details in results.items():
+              lines.append(f"| {job} | {details['result']} |")
+          lines += ["", f"Commit: `{os.environ['SOURCE_COMMIT']}`", "",
+              f"[Run logs and artifacts]({os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']})",
+              "", "Publication is opt-in; skipped publication jobs did not publish artifacts."]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
