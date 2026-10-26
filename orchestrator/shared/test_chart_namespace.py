@@ -291,6 +291,20 @@ def test_empty_image_pull_secrets_renders(tmp_path):
     assert "imagePullSecrets:\n        []" in result.stdout
 
 
+def test_empty_github_auth_renders_and_invalid_values_fail(tmp_path):
+    values = yaml.safe_load((CHART / "example.values.yaml").read_text())
+    values["githubAuth"].update(appId="", audience="")
+    values_file = tmp_path / "values.yaml"
+    values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+    base = ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator",
+            "--values", str(values_file), "--set", "management.enabled=true"]
+    result = subprocess.run(base, check=False, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    for setting in ("githubAuth.appId=abc", "githubAuth.audience=http://x"):
+        result = subprocess.run([*base, "--set", setting], check=False, capture_output=True, text=True)
+        assert result.returncode != 0, setting
+
+
 @pytest.mark.parametrize("event", ["push", "workflow_dispatch", "pull_request", "release"])
 @pytest.mark.parametrize("ref", ["refs/heads/main", "refs/tags/v1.2.3", "refs/heads/other", "refs/pull/1/merge"])
 @pytest.mark.parametrize("enabled", ["true", "false", "TRUE"])

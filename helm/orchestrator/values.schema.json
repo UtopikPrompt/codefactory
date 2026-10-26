@@ -99,12 +99,11 @@
                 "audience": {
                     "type": "string",
                     "maxLength": 256,
-                    "minLength": 1,
-                    "pattern": "^https://[^<>\\s]+$"
+                    "pattern": "^(https://[^<>\\s]+)?$"
                 },
                 "appId": {
                     "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
+                    "pattern": "^([1-9][0-9]*)?$"
                 },
                 "workflowPolicy": {
                     "type": "object",

@@ -271,7 +271,7 @@ def test_app_chart_lint_render_and_schema(helm_values):
     assert not secrets.intersection({"orchestrator-github-pr-auth", "orchestrator-gateway-auth", "orchestrator-management-repositories"})
     role = next(document for document in documents if document["kind"] == "Role" and document["metadata"]["name"] == "orchestrator-supervisor")
     assert next(rule for rule in role["rules"] if "configmaps" in rule["resources"])["verbs"] == ["get"]
-    for setting in ("githubAuth.audience=", "githubAuth.appId=", "githubAuth.workflowPolicy.events[0]=pull_request",
+    for setting in ("githubAuth.audience=http://x", "githubAuth.appId=abc", "githubAuth.workflowPolicy.events[0]=pull_request",
                     "secretRefs.githubAppKey.name=", "secretRefs.supervisorServiceToken.name="):
         invalid = subprocess.run(["helm", "template", "app-check", str(chart), "--values", "-", "--set", setting],
                                  input=yaml.safe_dump(values), capture_output=True, text=True, check=False)
