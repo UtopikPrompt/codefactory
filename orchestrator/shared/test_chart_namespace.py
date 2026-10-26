@@ -277,6 +277,20 @@ def test_namespace_is_not_a_chart_value():
     assert "namespace" not in schema["properties"]
 
 
+def test_empty_image_pull_secrets_renders(tmp_path):
+    values = yaml.safe_load((CHART / "example.values.yaml").read_text())
+    values["imagePullSecrets"] = []
+    values_file = tmp_path / "values.yaml"
+    values_file.write_text(yaml.safe_dump(values), encoding="utf-8")
+    result = subprocess.run(
+        ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator",
+         "--values", str(values_file), "--set", "management.enabled=true"],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "imagePullSecrets:\n        []" in result.stdout
+
+
 @pytest.mark.parametrize("event", ["push", "workflow_dispatch", "pull_request", "release"])
 @pytest.mark.parametrize("ref", ["refs/heads/main", "refs/tags/v1.2.3", "refs/heads/other", "refs/pull/1/merge"])
 @pytest.mark.parametrize("enabled", ["true", "false", "TRUE"])
