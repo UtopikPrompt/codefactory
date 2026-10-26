@@ -59,14 +59,16 @@ coordinates, build behavior, and source revision labels are unchanged.
 
 Both repositories use the same chart publication policy after lint, tests, and
 chart validation succeed: push or manual runs on main or version tags are
-eligible, with publication still opt-in. Tags must be strictly `vMAJOR.MINOR.PATCH`
-or `MAJOR.MINOR.PATCH` (no leading zeroes except `0`); the optional `v` is removed.
-Release versions are immutable and existing releases are never overwritten.
-Main publishes the valid SemVer `0.0.0-sha.<full-commit>` and moves the OCI `main`
-alias to that verified source digest. Tag releases never move `main`.
+eligible, with publication still opt-in. Tags must be exact SemVer versions
+with an optional leading `v`; prerelease identifiers follow SemVer and numeric
+identifiers cannot have leading zeroes. Release versions are immutable and
+existing releases are never overwritten. The infra Dev profile pins the exact
+prerelease version `0.0.0-dev`, distinct from the mutable OCI `dev` alias, which
+main updates to the verified source digest. Tag releases never move `dev`.
+Main also retains the immutable source chart `0.0.0-sha.<full-commit>`.
 Every publication retains that commit-addressed source chart; an existing source
 version is reused only if its revision annotation matches the requested commit.
-Source commit and registry digest are verified before updating the main alias
+Source commit and registry digest are verified before updating the `dev` alias
 or reporting successful publication. Infra consumes the OCI chart repository and
 exact version configured for the environment, using `helm pull --version`.
 Product release-manifest JSON and intermediate chart/image manifest artifacts

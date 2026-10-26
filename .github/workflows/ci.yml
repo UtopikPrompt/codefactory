@@ -234,8 +234,8 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             chart_version="${GITHUB_REF#refs/tags/}"
             chart_version="${chart_version#v}"
-            if [[ ! "$chart_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-              echo "Release tag must be vMAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH" >&2
+            if [[ ! "$chart_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$ ]]; then
+              echo "Release tag must be vMAJOR.MINOR.PATCH[-PRERELEASE] or MAJOR.MINOR.PATCH[-PRERELEASE]" >&2
               exit 1
             fi
           elif [[ "$GITHUB_REF" == refs/heads/main ]]; then

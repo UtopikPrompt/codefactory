@@ -305,8 +305,11 @@ def test_chart_publish_gate(event, ref, enabled, validated):
     ("refs/heads/main", "0.0.0-sha." + "a" * 40),
     ("refs/tags/v1.2.3", "1.2.3"), ("refs/tags/1.2.3", "1.2.3"),
     ("refs/tags/v0.0.0", "0.0.0"), ("refs/tags/10.20.30", "10.20.30"),
+    ("refs/tags/v0.0.0-dev", "0.0.0-dev"), ("refs/tags/1.2.3-rc.1", "1.2.3-rc.1"),
     *[("refs/tags/" + tag, None) for tag in (
-        "v01.2.3", "1.02.3", "1.2.03", "v1.2", "vv1.2.3", "v1.2.3-rc.1",
+        "v01.2.3", "1.02.3", "1.2.03", "v1.2", "vv1.2.3",
+        "v1.2.3-", "v1.2.3-.rc", "v1.2.3-rc.", "v1.2.3-rc..1", "v1.2.3-rc.01",
+        "v1.2.3-01", "v1.2.3-rc_1",
         "1.2.3+build", "dev", "1.2.3/other", "1.2.3\ninjected", "",
     )],
     ("refs/heads/other", None), ("refs/pull/1/merge", None),
