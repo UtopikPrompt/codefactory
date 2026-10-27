@@ -93,6 +93,18 @@ selectors. Set the supported `supervisor.config` URLs for the actual inference
 namespace; moving this release does not relocate another release or rewrite
 those endpoints.
 
+Task-state storage defaults to a chart-created 1Gi PVC or uses
+`gateway.persistence.existingClaim`. For explicitly approved static local storage,
+set `gateway.persistence.pv.create: true` with a PV `name`, `nodeName`, and normalized
+absolute `path`, matching `gateway.persistence.volumeName`, `accessMode: ReadWriteOnce`,
+`storageClassName: ""`, an empty `existingClaim` and the approved `size`. The PV is
+prebound to the release namespace's `orchestrator-task-state` claim with `Retain`;
+both resources have Helm's keep policy. The directory must already be verified on
+the selected node and writable by UID/GID 1001. Chart rendering does not verify or
+create that directory. Infra additionally requires the independent target-level
+`codefactoryStorageBootstrap: create-only` authorization and rejects adoption,
+replacement and storage drift. Do not substitute a default Delete-reclaim class.
+
 Focused namespace checks:
 
 ```sh

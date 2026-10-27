@@ -565,3 +565,55 @@ def test_release_namespace_controls_resources_and_rbac_subjects(create):
         for subject in resource.get("subjects", []):
             if subject["kind"] == "ServiceAccount":
                 assert subject["namespace"] == "tenant-agents"
+
+
+def test_task_state_static_storage_is_opt_in_prebound_and_retained(tmp_path):
+    values = {"gateway": {"persistence": {
+        "size": "5Gi", "accessMode": "ReadWriteOnce", "storageClassName": "",
+        "volumeName": "task-state", "pv": {"create": True, "name": "task-state",
+                                                "nodeName": "node", "path": "/task-state"},
+    }}}
+    path = tmp_path / "values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    arguments = ["helm", "template", "orchestrator", str(CHART), "--namespace", "tenant-agents",
+                 "--values", str(CHART / "example.values.yaml")]
+    default = subprocess.run(arguments, check=True, capture_output=True, text=True)
+    assert not any(item and item["kind"] == "PersistentVolume" for item in yaml.safe_load_all(default.stdout))
+    rendered = subprocess.run([*arguments, "--values", str(path)], check=True, capture_output=True, text=True)
+    storage = {item["kind"]: item for item in yaml.safe_load_all(rendered.stdout)
+               if item and item["kind"] in {"PersistentVolume", "PersistentVolumeClaim"}}
+    volume, claim = storage["PersistentVolume"], storage["PersistentVolumeClaim"]
+    assert volume["spec"] == {
+        "capacity": {"storage": "5Gi"}, "volumeMode": "Filesystem", "accessModes": ["ReadWriteOnce"],
+        "persistentVolumeReclaimPolicy": "Retain", "storageClassName": "", "local": {"path": "/task-state"},
+        "claimRef": {"namespace": "tenant-agents", "name": "orchestrator-task-state"},
+        "nodeAffinity": {"required": {"nodeSelectorTerms": [{"matchFields": [{
+            "key": "metadata.name", "operator": "In", "values": ["node"],
+        }]}]}},
+    }
+    assert claim["spec"] == {
+        "accessModes": ["ReadWriteOnce"], "storageClassName": "", "volumeName": "task-state",
+        "resources": {"requests": {"storage": "5Gi"}},
+    }
+    for item in storage.values():
+        assert item["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+        assert item["metadata"]["labels"]["app.kubernetes.io/managed-by"] == "Helm"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("pv.name", ""), ("pv.nodeName", ""), ("pv.path", ""), ("pv.path", "/"),
+    ("pv.path", "/tasks/../other"), ("pv.path", "/tasks/"), ("pv.path", "relative"),
+    ("volumeName", "other"), ("existingClaim", "existing"), ("accessMode", "ReadWriteMany"),
+    ("storageClassName", "local-path"), ("size", "0Gi"),
+])
+def test_task_state_static_storage_rejects_incomplete_or_conflicting_values(field, value):
+    arguments = ["helm", "template", "orchestrator", str(CHART),
+                 "--values", str(CHART / "example.values.yaml"),
+                 "--set", "gateway.persistence.pv.create=true",
+                 "--set", "gateway.persistence.pv.name=task-state",
+                 "--set", "gateway.persistence.pv.nodeName=node",
+                 "--set", "gateway.persistence.pv.path=/task-state",
+                 "--set", "gateway.persistence.volumeName=task-state",
+                 "--set-string", f"gateway.persistence.{field}={value}"]
+    rendered = subprocess.run(arguments, check=False, capture_output=True, text=True)
+    assert rendered.returncode != 0

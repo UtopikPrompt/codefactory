@@ -113,16 +113,62 @@ spec:
           persistentVolumeClaim:
             claimName: {{ default (printf "%s-task-state" .Chart.Name) .Values.gateway.persistence.existingClaim }}
 {{- if not .Values.gateway.persistence.existingClaim }}
+{{- if .Values.gateway.persistence.pv.create }}
+{{- if ne .Values.gateway.persistence.volumeName .Values.gateway.persistence.pv.name }}
+{{- fail "gateway.persistence.volumeName must match pv.name" }}
+{{- end }}
+{{- $path := .Values.gateway.persistence.pv.path }}
+{{- if or (ne (clean $path) $path) (contains "/../" $path) (hasSuffix "/.." $path) }}
+{{- fail "gateway.persistence.pv.path must be an absolute normalized dedicated directory" }}
+{{- end }}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.gateway.persistence.pv.name }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  capacity:
+    storage: {{ .Values.gateway.persistence.size | quote }}
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  local:
+    path: {{ .Values.gateway.persistence.pv.path | quote }}
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: {{ .Chart.Name }}-task-state
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchFields:
+            - key: metadata.name
+              operator: In
+              values: [{{ .Values.gateway.persistence.pv.nodeName | quote }}]
+{{- end }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Chart.Name }}-task-state
   namespace: {{ .Release.Namespace }}
+  {{- if .Values.gateway.persistence.pv.create }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
 spec:
   accessModes: [{{ .Values.gateway.persistence.accessMode | default "ReadWriteMany" }}]
-  {{- if .Values.gateway.persistence.storageClassName }}
+  {{- if or .Values.gateway.persistence.pv.create .Values.gateway.persistence.storageClassName .Values.gateway.persistence.volumeName }}
   storageClassName: {{ .Values.gateway.persistence.storageClassName | quote }}
+  {{- end }}
+  {{- with .Values.gateway.persistence.volumeName }}
+  volumeName: {{ . | quote }}
   {{- end }}
   resources:
     requests:

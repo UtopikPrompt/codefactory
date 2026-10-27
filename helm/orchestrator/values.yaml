@@ -94,6 +94,12 @@ gateway:
     storageClassName: ""
     existingClaim: ""
     accessMode: ReadWriteOnce
+    volumeName: ""
+    pv:
+      create: false
+      name: ""
+      nodeName: ""
+      path: ""
   labels:
     app: orchestrator
     component: gateway
