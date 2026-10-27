@@ -729,39 +729,85 @@
                         "pv": {
                             "type": "object",
                             "additionalProperties": false,
-                            "required": ["create", "name", "nodeName", "path"],
+                            "required": [
+                                "create",
+                                "name",
+                                "nodeName",
+                                "path"
+                            ],
                             "properties": {
-                                "create": {"type": "boolean"},
-                                "name": {"type": "string"},
-                                "nodeName": {"type": "string"},
-                                "path": {"type": "string"}
+                                "create": {
+                                    "type": "boolean"
+                                },
+                                "name": {
+                                    "type": "string"
+                                },
+                                "nodeName": {
+                                    "type": "string"
+                                },
+                                "path": {
+                                    "type": "string"
+                                }
                             }
                         }
                     },
-                    "allOf": [{
-                        "if": {
-                            "required": ["pv"],
-                            "properties": {"pv": {
-                                "required": ["create"],
-                                "properties": {"create": {"const": true}}
-                            }}
-                        },
-                        "then": {
-                            "required": ["accessMode", "volumeName"],
-                            "properties": {
-                                "existingClaim": {"const": ""},
-                                "accessMode": {"const": "ReadWriteOnce"},
-                                "storageClassName": {"const": ""},
-                                "size": {"pattern": "^[1-9][0-9]*(Ki|Mi|Gi|Ti|Pi|Ei)$"},
-                                "volumeName": {"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
-                                "pv": {"properties": {
-                                    "name": {"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
-                                    "nodeName": {"pattern": "^[a-z0-9][a-z0-9.-]{0,252}$"},
-                                    "path": {"pattern": "^/[^\\s]+$"}
-                                }}
+                    "allOf": [
+                        {
+                            "if": {
+                                "required": [
+                                    "pv"
+                                ],
+                                "properties": {
+                                    "pv": {
+                                        "required": [
+                                            "create"
+                                        ],
+                                        "properties": {
+                                            "create": {
+                                                "const": true
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "then": {
+                                "required": [
+                                    "accessMode",
+                                    "volumeName"
+                                ],
+                                "properties": {
+                                    "existingClaim": {
+                                        "const": ""
+                                    },
+                                    "accessMode": {
+                                        "const": "ReadWriteOnce"
+                                    },
+                                    "storageClassName": {
+                                        "const": ""
+                                    },
+                                    "size": {
+                                        "pattern": "^[1-9][0-9]*(Ki|Mi|Gi|Ti|Pi|Ei)$"
+                                    },
+                                    "volumeName": {
+                                        "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+                                    },
+                                    "pv": {
+                                        "properties": {
+                                            "name": {
+                                                "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+                                            },
+                                            "nodeName": {
+                                                "pattern": "^[a-z0-9][a-z0-9.-]{0,252}$"
+                                            },
+                                            "path": {
+                                                "pattern": "^/[^\\s]+$"
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                    }]
+                    ]
                 }
             }
         },
