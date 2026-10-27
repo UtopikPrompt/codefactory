@@ -339,6 +339,16 @@ Host, independently of the public HTTPS `supervisor.config.acceptor-url`. Keep
 reachability, edge-to-ingress restrictions, and denied backend bypasses separately.
 The nonsecret example includes an external route, not complete security isolation.
 
+For `k8s-node01` behind UtopikLab's existing wildcard-certificate reverse proxy,
+the organization profile selects `external`: public clients use verified HTTPS
+and the proxy uses HTTP to ingress. No certificate belongs on the node. Preserve
+`edge-tls`; there is no trusted-proxy CIDR setting in the gateway and forwarded
+headers grant no authority. Restrict backend access to the actual proxy sources
+with infrastructure controls. The exact public origin and forwarded Host must be
+confirmed before replacing defaults; a wildcard certificate does not select a
+service hostname. This requires an organization-value override, not a new chart
+transport mode or a TLS Secret exception in deployment preflight.
+
 Runtime `local-http` is loopback-only development and is disallowed by the chart.
 Missing/unknown transport modes fail startup. Worker local tests have their own
 explicit local-HTTP opt-in; production broker access still requires HTTPS.
