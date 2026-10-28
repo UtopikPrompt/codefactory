@@ -145,7 +145,7 @@ management:
   authMode: admin
   admin:
     username: admin
-  image: "ghcr.io/utopikprompt/codefactory-management:latest"
+  image: "ghcr.io/utopikprompt/codefactory-management:dev"
   imagePullPolicy: IfNotPresent
   publicOrigin: ""
   gatewayUrl: ""

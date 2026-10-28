@@ -11,6 +11,13 @@ export interface Task {
     config_version?: string | null
     config_hash?: string | null
     pr_url?: string | null
+    execution?: {
+        job_name: string | null
+        worker_status: 'candidate' | 'candidate_failed' | null
+        validation_status: 'passed' | 'failed' | 'not-run' | null
+        error: string | null
+        report_failed: boolean
+    }
 }
 export interface TaskPage { tasks: Task[]; total: number; limit: number; offset: number }
 export interface Config {

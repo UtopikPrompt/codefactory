@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react'
+import { Fragment, useState, useSyncExternalStore } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as Dialog from '@radix-ui/react-dialog'
@@ -79,24 +79,45 @@ function Submission({ onSubmitted }: { onSubmitted: (task: Task) => void }) {
 function TaskDetail({ taskId }: { taskId: string }) {
     const query = useQuery({ queryKey: ['task', taskId], queryFn: () => api<Task>(`/tasks/${encodeURIComponent(taskId)}`), refetchInterval: 10000 })
     const task = query.data
-    return <aside className="detail" aria-label="Task detail">
-        <div className="section-heading"><h2>Task detail</h2><a className="icon-button" href="#/tasks" aria-label="Close task detail" title="Close task detail"><X /></a></div>
+    const execution = task?.execution
+    return <section id={`task-detail-${taskId}`} className="task-detail" aria-label={`Task detail for ${taskId}`}>
+        <div className="detail-heading"><div><span className="eyebrow">Task detail</span><h2 className="task-identifier">{taskId}</h2></div><a className="icon-button" href="#/tasks" aria-label="Collapse task detail" title="Collapse task detail"><X /></a></div>
         {query.isPending || query.isError || !task ? <QueryState loading={query.isPending} error={query.error} retry={() => { void query.refetch() }} /> : <>
-            <div className="detail-status"><Status value={task.status} /><span className="muted">Runtime</span></div>
-            <h3 className="task-identifier">{task.task_id}</h3>
-            <dl>
-                <dt>Repository</dt><dd>{task.repo || 'Not recorded'}</dd>
-                <dt>Issue</dt><dd>{task.repo && task.issue_number ? <a href={`https://github.com/${task.repo}/issues/${task.issue_number}`} target="_blank" rel="noreferrer">#{task.issue_number}<ExternalLink /></a> : 'Not recorded'}</dd>
-                <dt>Attempts</dt><dd>{task.attempts ?? 'Not recorded'}</dd>
-                <dt>Lifecycle</dt><dd>{task.lifecycle || 'Not recorded'}</dd>
-                <dt>Credential cleanup</dt><dd>{task.credential_cleanup || 'Not recorded'}</dd>
-                <dt>Retry of</dt><dd>{task.retry_of ? <a href={`#/tasks/${task.retry_of}`}>{task.retry_of}</a> : 'None'}</dd>
-                <dt>Next attempt</dt><dd>{task.retry_task_id ? <a href={`#/tasks/${task.retry_task_id}`}>{task.retry_task_id}</a> : 'None'}</dd>
-            </dl>
-            {task.pr_url && <a className="review-link" href={task.pr_url} target="_blank" rel="noreferrer"><GitPullRequest />Human review<ExternalLink /></a>}
-            <h3 className="subheading">Configuration snapshot</h3><dl><dt>Version</dt><dd>{task.config_version || 'Not recorded'}</dd><dt>Hash</dt><dd className="mono">{task.config_hash || 'Not recorded'}</dd></dl>
+            <div className="detail-grid">
+                <section className="detail-section" aria-labelledby={`execution-heading-${taskId}`}>
+                    <h3 id={`execution-heading-${taskId}`}>Execution steps</h3>
+                    <ol className="execution-steps">
+                        <li><span>Task intake</span><strong>{task.attempts ? 'Claimed for execution' : 'Accepted'}</strong></li>
+                        <li><span>Worker job</span><strong className="mono">{execution?.job_name || 'Not recorded'}</strong></li>
+                        <li><span>Worker result</span><strong>{execution?.worker_status?.replaceAll('_', ' ') || 'Not recorded'}</strong></li>
+                        <li><span>Candidate validation</span><strong>{execution?.validation_status || 'Not recorded'}</strong></li>
+                        <li><span>Task outcome</span><strong><Status value={task.status} /></strong></li>
+                    </ol>
+                </section>
+                <section className="detail-section" aria-labelledby={`failure-heading-${taskId}`}>
+                    <h3 id={`failure-heading-${taskId}`}>{task.status === 'failed' ? 'Failure details' : 'Task metadata'}</h3>
+                    {task.status === 'failed' && <div className="failure-message" role="note">
+                        <strong>{execution?.error || 'No error details were recorded.'}</strong>
+                        {execution?.report_failed && <p>The worker could not report its result to the task service.</p>}
+                    </div>}
+                    <dl>
+                        <dt>Repository</dt><dd>{task.repo || 'Not recorded'}</dd>
+                        <dt>Issue</dt><dd>{task.repo && task.issue_number ? <a href={`https://github.com/${task.repo}/issues/${task.issue_number}`} target="_blank" rel="noreferrer">#{task.issue_number}<ExternalLink /></a> : 'Not recorded'}</dd>
+                        <dt>Attempts</dt><dd>{task.attempts ?? 'Not recorded'}</dd>
+                        <dt>Lifecycle</dt><dd>{task.lifecycle || 'Not recorded'}</dd>
+                        <dt>Credential cleanup</dt><dd>{task.credential_cleanup || 'Not recorded'}</dd>
+                        <dt>Retry of</dt><dd>{task.retry_of ? <a href={`#/tasks/${task.retry_of}`}>{task.retry_of}</a> : 'None'}</dd>
+                        <dt>Next attempt</dt><dd>{task.retry_task_id ? <a href={`#/tasks/${task.retry_task_id}`}>{task.retry_task_id}</a> : 'None'}</dd>
+                    </dl>
+                </section>
+                <section className="detail-section" aria-labelledby={`config-heading-${taskId}`}>
+                    <h3 id={`config-heading-${taskId}`}>Configuration snapshot</h3>
+                    <dl><dt>Version</dt><dd>{task.config_version || 'Not recorded'}</dd><dt>Hash</dt><dd className="mono">{task.config_hash || 'Not recorded'}</dd></dl>
+                    {task.pr_url && <a className="review-link" href={task.pr_url} target="_blank" rel="noreferrer"><GitPullRequest />Human review<ExternalLink /></a>}
+                </section>
+            </div>
         </>}
-    </aside>
+    </section>
 }
 
 function Tasks({ taskId }: { taskId?: string }) {
@@ -126,14 +147,15 @@ function Tasks({ taskId }: { taskId?: string }) {
             {(status || filter) && <button onClick={() => { setStatus(''); setRepo(''); setFilter(''); setOffset(0) }}><X />Clear</button>}
             <div className="toolbar-end"><span className="muted" role="status">{query.isFetching ? 'Updating' : '10s refresh'}</span><IconButton label="Refresh tasks" onClick={() => { void query.refetch() }} disabled={query.isFetching}><RefreshCw className={query.isFetching ? 'spin' : ''} /></IconButton></div>
         </div>
-        <div className={`task-workspace ${taskId ? 'with-detail' : ''}`}>
+        <div className="task-workspace">
             <section className="task-list" aria-label="Task list">
                 {query.isPending || query.isError ? <QueryState loading={query.isPending} error={query.error} retry={() => { void query.refetch() }} /> : query.data.tasks.length === 0 ? <QueryState empty={offset ? 'No tasks on this page.' : 'No tasks found.'} retry={() => { void query.refetch() }} /> :
-                    <table><thead><tr><th>Task / repository</th><th>Issue</th><th>Status</th><th className="wide-column">Attempts</th><th className="wide-column">Lifecycle</th><th><span className="sr-only">Open</span></th></tr></thead><tbody>{query.data.tasks.map(task =>
-                        <tr key={task.task_id} className={taskId === task.task_id ? 'selected' : ''}><td><a className="task-link mono" title={task.task_id} href={`#/tasks/${task.task_id}`}>{task.task_id.length > 40 ? `${task.task_id.slice(0, 40)}...` : task.task_id}</a><span className="repository-name">{task.repo || 'Not recorded'}</span></td><td>{task.issue_number ? `#${task.issue_number}` : '-'}</td><td><Status value={task.status} /></td><td className="wide-column mono">{task.attempts ?? '-'}</td><td className="wide-column">{task.lifecycle}</td><td><a className="row-open" href={`#/tasks/${task.task_id}`} aria-label={`Open task ${task.task_id}`} title="Open task"><ChevronRight /></a></td></tr>)}</tbody></table>}
+                    <table><thead><tr><th>Task / repository</th><th>Issue</th><th>Status</th><th className="wide-column">Attempts</th><th className="wide-column">Lifecycle</th><th><span className="sr-only">Open</span></th></tr></thead><tbody>{query.data.tasks.map(task => <Fragment key={task.task_id}>
+                        <tr className={taskId === task.task_id ? 'selected' : ''}><td><a className="task-link mono" title={task.task_id} href={`#/tasks/${task.task_id}`}>{task.task_id.length > 40 ? `${task.task_id.slice(0, 40)}...` : task.task_id}</a><span className="repository-name">{task.repo || 'Not recorded'}</span></td><td>{task.issue_number ? `#${task.issue_number}` : '-'}</td><td><Status value={task.status} /></td><td className="wide-column mono">{task.attempts ?? '-'}</td><td className="wide-column">{task.lifecycle}</td><td><button className={`row-open ${taskId === task.task_id ? 'expanded' : ''}`} type="button" aria-label={`${taskId === task.task_id ? 'Collapse' : 'Expand'} task ${task.task_id}`} aria-expanded={taskId === task.task_id} aria-controls={taskId === task.task_id ? `task-detail-${task.task_id}` : undefined} onClick={() => { window.location.hash = taskId === task.task_id ? '/tasks' : `/tasks/${task.task_id}` }}><ChevronRight /></button></td></tr>
+                        {taskId === task.task_id && <tr className="detail-row"><td colSpan={6}><TaskDetail taskId={task.task_id} /></td></tr>}
+                    </Fragment>)}</tbody></table>}
                 <footer className="pagination"><span>{query.data && !query.isError ? `${query.data.total === 0 ? 0 : offset + 1}-${Math.min(offset + 25, query.data.total)} of ${query.data.total}` : '-'}</span><div><IconButton label="Previous page" onClick={() => setOffset(Math.max(0, offset - 25))} disabled={offset === 0 || query.isPending}><ArrowLeft /></IconButton><IconButton label="Next page" onClick={() => setOffset(offset + 25)} disabled={!query.data || query.isError || offset + 25 >= query.data.total || query.isFetching}><ArrowRight /></IconButton></div></footer>
             </section>
-            {taskId && <TaskDetail key={taskId} taskId={taskId} />}
         </div>
     </>
 }

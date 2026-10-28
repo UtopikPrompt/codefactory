@@ -80,6 +80,10 @@ spec:
               value: {{ .Values.gateway.taskCredentialTtlSeconds | quote }}
             - name: TASK_DB_PATH
               value: /data/tasks/tasks.sqlite3
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: AGENT_CONFIG_VERSION
               value: {{ .Values.agentCatalog.version | default "1" | quote }}
             - name: AGENT_CONFIG_HASH
@@ -128,14 +132,12 @@ metadata:
   name: {{ .Values.gateway.persistence.pv.name }}
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-  annotations:
-    helm.sh/resource-policy: keep
 spec:
   capacity:
     storage: {{ .Values.gateway.persistence.size | quote }}
   volumeMode: Filesystem
   accessModes: [ReadWriteOnce]
-  persistentVolumeReclaimPolicy: Retain
+  persistentVolumeReclaimPolicy: Delete
   storageClassName: ""
   local:
     path: {{ .Values.gateway.persistence.pv.path | quote }}
@@ -156,12 +158,8 @@ kind: PersistentVolumeClaim
 metadata:
   name: {{ .Chart.Name }}-task-state
   namespace: {{ .Release.Namespace }}
-  {{- if .Values.gateway.persistence.pv.create }}
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-  annotations:
-    helm.sh/resource-policy: keep
-  {{- end }}
 spec:
   accessModes: [{{ .Values.gateway.persistence.accessMode | default "ReadWriteMany" }}]
   {{- if or .Values.gateway.persistence.pv.create .Values.gateway.persistence.storageClassName .Values.gateway.persistence.volumeName }}

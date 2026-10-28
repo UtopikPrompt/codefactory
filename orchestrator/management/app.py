@@ -20,6 +20,8 @@ TASK_FIELDS = ("task_id", "repo", "issue_number", "status", "lifecycle", "creden
                "retry_of", "retry_task_id", "attempts", "config_version", "config_hash")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 TASK_ID = re.compile(r"[A-Za-z0-9_.-]{1,63}")
+JOB_NAME = re.compile(r"[a-z0-9](?:[-a-z0-9.]{0,61}[a-z0-9])?")
+DIAGNOSTIC_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,:;_()'/-]{0,499}")
 
 
 def create_app(settings=None, transport=None, signing_keys=None, github_transport=None):
@@ -217,6 +219,26 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
     def task_summary(task):
         return {field: task[field] for field in TASK_FIELDS if field in task}
 
+    def task_execution(data):
+        result = data.get("result")
+        result = result if isinstance(result, dict) else {}
+        validation = result.get("validation")
+        validation = validation if isinstance(validation, dict) else {}
+        job = data.get("job")
+        job_name = job.get("name") if isinstance(job, dict) else None
+        error = result.get("error")
+        if (not isinstance(error, str) or not DIAGNOSTIC_TEXT.fullmatch(error.strip())
+                or re.search(r"https?://|bearer\s|gh[pousr]_|-----BEGIN|(?<![A-Za-z0-9])[A-Za-z0-9]{32,}(?![A-Za-z0-9])",
+                             error, re.IGNORECASE)):
+            error = None
+        return {
+            "job_name": job_name if isinstance(job_name, str) and JOB_NAME.fullmatch(job_name) else None,
+            "worker_status": result.get("status") if result.get("status") in ("candidate", "candidate_failed") else None,
+            "validation_status": validation.get("status") if validation.get("status") in ("passed", "failed", "not-run") else None,
+            "error": error.strip() if error else None,
+            "report_failed": result.get("report_failed") is True,
+        }
+
     @app.get("/healthz")
     def health():
         return {"status": "ok"}
@@ -243,6 +265,7 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
             raise HTTPException(400, "invalid-task-id")
         _, data = await gateway("GET", "/api/v1/tasks/" + task_id)
         summary = task_summary(data)
+        summary["execution"] = task_execution(data)
         result = data.get("result")
         pr_url = result.get("pr_url") if isinstance(result, dict) else None
         repo = data.get("repo")

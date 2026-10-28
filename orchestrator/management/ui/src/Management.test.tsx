@@ -7,6 +7,7 @@ import Management from './Management'
 const task = { task_id: 'task-1', repo: 'org/repo', issue_number: 7, status: 'queued', attempts: 0, lifecycle: 'pending' }
 let calls: [string, RequestInit | undefined][]
 let taskResponse: unknown
+let taskDetailResponse: unknown
 let status = 200
 let repositories: string[]
 let connected = true
@@ -14,11 +15,14 @@ let connected = true
 beforeEach(() => {
     window.location.hash = '/tasks'
     calls = []; status = 200; repositories = ['org/repo']; connected = true; taskResponse = { tasks: [task], total: 1, limit: 25, offset: 0 }
+    taskDetailResponse = { ...task, status: 'completed', pr_url: 'https://github.com/org/repo/pull/8', execution: {
+        job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false
+    } }
     vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
         calls.push([url, options])
         const body = url.endsWith('/github/session') ? { connected, configured: true }
             : url.endsWith('/session') ? { subject: 'operator' } : url.endsWith('/repositories') ? { repositories }
-                : options?.method === 'POST' ? task : url.includes('/tasks/task-1') ? { ...task, status: 'completed', pr_url: 'https://github.com/org/repo/pull/8' }
+                : options?.method === 'POST' ? task : url.includes('/tasks/task-1') ? taskDetailResponse
                     : url.includes('/config') ? { version: '1', hash: 'abc', models: [{ role: 'coder', model: 'verified-model', native_download: true, availability: 'unknown' }], agents: [] } : taskResponse
         return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
     }))
@@ -29,14 +33,36 @@ function mount() {
     return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><Management /></QueryClientProvider>)
 }
 
-test('renders tasks, filters, and the safe task detail', async () => {
+test('opens task details inline and preserves task routes', async () => {
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('link', { name: 'task-1' }))
-    expect(await screen.findByRole('complementary', { name: 'Task detail' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: 'Task detail for task-1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse task task-1' })).toHaveAttribute('aria-expanded', 'true')
     expect(await screen.findByRole('link', { name: 'Human review' })).toHaveAttribute('href', 'https://github.com/org/repo/pull/8')
+    const taskRow = screen.getByRole('link', { name: 'task-1' }).closest('tr')
+    expect(taskRow?.nextElementSibling).toHaveClass('detail-row')
+    await user.click(screen.getByRole('link', { name: 'Collapse task detail' }))
+    expect(screen.queryByRole('region', { name: 'Task detail for task-1' })).not.toBeInTheDocument()
     await user.selectOptions(screen.getByLabelText('Status'), 'running')
     await waitFor(() => expect(calls.some(([url]) => url.includes('status=running'))).toBe(true))
+})
+
+test('shows structured execution steps and a failed task error without raw payloads', async () => {
+    taskResponse = { tasks: [{ ...task, status: 'failed', attempts: 2, lifecycle: 'synced' }], total: 1, limit: 25, offset: 0 }
+    taskDetailResponse = { ...task, status: 'failed', attempts: 2, lifecycle: 'synced', execution: {
+        job_name: 'worker-job-1', worker_status: 'candidate_failed', validation_status: 'failed',
+        error: 'candidate-validation-not-passed', report_failed: false
+    } }
+    const user = userEvent.setup()
+    mount()
+    await user.click(await screen.findByRole('button', { name: 'Expand task task-1' }))
+    const detail = await screen.findByRole('region', { name: 'Task detail for task-1' })
+    expect(within(detail).getByRole('heading', { name: 'Execution steps' })).toBeInTheDocument()
+    expect(within(detail).getByText('candidate failed')).toBeInTheDocument()
+    expect(within(detail).getByText('candidate-validation-not-passed')).toBeInTheDocument()
+    expect(within(detail).getByRole('heading', { name: 'Failure details' })).toBeInTheDocument()
+    expect(within(detail).queryByText(/patch payload/i)).not.toBeInTheDocument()
 })
 
 test('submits only repository and issue', async () => {

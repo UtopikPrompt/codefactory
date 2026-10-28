@@ -353,11 +353,24 @@ def test_csrf_size_and_content_type_guards(boundary):
 def test_task_and_config_summaries_are_allowlisted(boundary):
     client, upstream, _, _ = boundary
     upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "repo": "org/repo", "status": "completed",
-        "result": {"pr_url": "https://github.com/org/repo/pull/8", "patch": "private", "error": "secret"},
-        "payload": "private", "job": {"env": "secret"}, "credential_ref": "secret"})
+        "result": {"pr_url": "https://github.com/org/repo/pull/8", "status": "candidate_failed",
+                   "validation": {"status": "failed", "output": "private"},
+                   "error": "candidate-validation-not-passed", "patch": "private", "token": "secret"},
+        "payload": "private", "job": {"name": "worker-job-1", "env": "secret"}, "credential_ref": "secret"})
     detail = client.get("/management/api/tasks/task-1")
     assert detail.json()["pr_url"] == "https://github.com/org/repo/pull/8"
-    assert "secret" not in detail.text and "private" not in detail.text
+    assert detail.json()["execution"] == {"job_name": "worker-job-1", "worker_status": "candidate_failed",
+                                           "validation_status": "failed", "error": "candidate-validation-not-passed",
+                                           "report_failed": False}
+    assert "secret" not in detail.text and "private" not in detail.text and "token" not in detail.text
+    upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "status": "failed",
+        "result": {"error": "request failed https://user:token@example.com"},
+        "job": {"name": "invalid/name", "env": "secret"}})
+    unsafe = client.get("/management/api/tasks/task-1").json()["execution"]
+    assert unsafe["error"] is None and unsafe["job_name"] is None
+    upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "status": "failed",
+        "result": {"error": "A" * 40}})
+    assert client.get("/management/api/tasks/task-1").json()["execution"]["error"] is None
     upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "repo": "org/repo",
                                                        "result": {"pr_url": "https://evil.example"}})
     assert client.get("/management/api/tasks/task-1").json()["pr_url"] is None

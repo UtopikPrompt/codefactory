@@ -98,12 +98,14 @@ Task-state storage defaults to a chart-created 1Gi PVC or uses
 set `gateway.persistence.pv.create: true` with a PV `name`, `nodeName`, and normalized
 absolute `path`, matching `gateway.persistence.volumeName`, `accessMode: ReadWriteOnce`,
 `storageClassName: ""`, an empty `existingClaim` and the approved `size`. The PV is
-prebound to the release namespace's `orchestrator-task-state` claim with `Retain`;
-both resources have Helm's keep policy. The directory must already be verified on
+prebound to the release namespace's `orchestrator-task-state` claim with `Delete`;
+neither resource has Helm's keep policy, so uninstalling the release removes both.
+Whether the node directory is removed on reclaim depends on the PV volume plugin;
+verify that before approving any data removal. The directory must already be verified on
 the selected node and writable by UID/GID 1001. Chart rendering does not verify or
 create that directory. Infra additionally requires the independent target-level
 `codefactoryStorageBootstrap: create-only` authorization and rejects adoption,
-replacement and storage drift. Do not substitute a default Delete-reclaim class.
+replacement and storage drift. Do not substitute a dynamically provisioned class.
 
 Focused namespace checks:
 

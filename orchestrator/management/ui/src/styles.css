@@ -334,10 +334,6 @@ main {
     align-items: start;
 }
 
-.task-workspace.with-detail {
-    grid-template-columns: minmax(0, 1fr) 320px;
-}
-
 .task-list {
     min-width: 0;
 }
@@ -391,6 +387,11 @@ tr.selected td {
     background: #eef6f2;
 }
 
+.detail-row td {
+    padding: 0;
+    background: #f7f9f8;
+}
+
 .task-link {
     display: block;
     font-weight: 500;
@@ -414,6 +415,10 @@ tr.selected td {
     justify-content: center;
     min-height: 32px;
     margin: -8px;
+}
+
+.row-open.expanded svg {
+    transform: rotate(90deg);
 }
 
 .status {
@@ -464,39 +469,93 @@ tr.selected td {
     gap: 6px;
 }
 
-.detail {
+.task-detail {
     min-width: 0;
-    background: white;
-    border-left: 2px solid #a8c8b7;
-    padding: 0 18px 18px;
+    border-top: 1px solid var(--border);
+    padding: 20px 24px 24px;
 }
 
-.section-heading {
+.detail-heading {
     display: flex;
     justify-content: space-between;
     gap: 12px;
     align-items: center;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 18px;
+    margin-bottom: 20px;
 }
 
-.section-heading .icon-button {
+.detail-heading .icon-button {
     border: 0;
 }
 
-.detail-status {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
+.detail-heading .eyebrow {
+    margin-bottom: 5px;
 }
 
 .task-identifier {
     overflow-wrap: anywhere;
     font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
+}
+
+.detail-section {
+    min-width: 0;
+}
+
+.detail-section h3 {
     font-size: 13px;
-    line-height: 1.7;
-    margin: 14px 0 22px;
+    font-weight: 600;
+    margin: 0 0 14px;
+}
+
+.execution-steps {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.execution-steps li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid #e7ebeb;
+    font-size: 12px;
+}
+
+.execution-steps li > span {
+    color: var(--muted);
+}
+
+.execution-steps strong {
+    min-width: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+    font-weight: 500;
+}
+
+.failure-message {
+    padding: 12px;
+    margin-bottom: 18px;
+    border-left: 3px solid #b13143;
+    background: #fff1f2;
+    color: #742d37;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+.failure-message p {
+    margin: 8px 0 0;
+    font-size: 12px;
 }
 
 dl {
@@ -527,12 +586,6 @@ dd a {
 dd svg {
     width: 12px;
     height: 12px;
-}
-
-.subheading {
-    border-top: 1px solid var(--border);
-    margin: 24px 0 16px;
-    padding-top: 16px;
 }
 
 .review-link {
@@ -701,20 +754,6 @@ dd svg {
     top: 12px;
 }
 
-@media (max-width: 1280px) {
-    .with-detail .wide-column {
-        display: none;
-    }
-
-    .with-detail .task-list th:first-child {
-        width: 45%;
-    }
-
-    .with-detail .task-list th:nth-child(3) {
-        width: 25%;
-    }
-}
-
 @media (max-width: 1000px) {
     .app-body {
         grid-template-columns: 155px minmax(0, 1fr);
@@ -724,16 +763,8 @@ dd svg {
         padding: 24px 20px;
     }
 
-    .task-workspace.with-detail {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .detail {
-        border-left-width: 3px;
-    }
-
-    .detail dl {
-        grid-template-columns: 140px minmax(0, 1fr);
+    .detail-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .table-scroll {
@@ -819,8 +850,7 @@ dd svg {
         padding: 12px 7px;
     }
 
-    .task-list th:first-child,
-    .with-detail .task-list th:first-child {
+    .task-list th:first-child {
         width: 44%;
     }
 
@@ -828,8 +858,7 @@ dd svg {
         width: 12%;
     }
 
-    .task-list th:nth-child(3),
-    .with-detail .task-list th:nth-child(3) {
+    .task-list th:nth-child(3) {
         width: 28%;
     }
 
@@ -850,8 +879,13 @@ dd svg {
         width: 23px;
     }
 
-    .detail {
-        padding: 0 14px 20px;
+    .task-detail {
+        padding: 18px 12px 20px;
+    }
+
+    .detail-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 22px;
     }
 
     .config-meta {

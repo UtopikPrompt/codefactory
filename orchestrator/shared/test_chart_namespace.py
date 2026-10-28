@@ -567,7 +567,7 @@ def test_release_namespace_controls_resources_and_rbac_subjects(create):
                 assert subject["namespace"] == "tenant-agents"
 
 
-def test_task_state_static_storage_is_opt_in_prebound_and_retained(tmp_path):
+def test_task_state_static_storage_is_opt_in_prebound_with_delete_policy(tmp_path):
     values = {"gateway": {"persistence": {
         "size": "5Gi", "accessMode": "ReadWriteOnce", "storageClassName": "",
         "volumeName": "task-state", "pv": {"create": True, "name": "task-state",
@@ -585,7 +585,7 @@ def test_task_state_static_storage_is_opt_in_prebound_and_retained(tmp_path):
     volume, claim = storage["PersistentVolume"], storage["PersistentVolumeClaim"]
     assert volume["spec"] == {
         "capacity": {"storage": "5Gi"}, "volumeMode": "Filesystem", "accessModes": ["ReadWriteOnce"],
-        "persistentVolumeReclaimPolicy": "Retain", "storageClassName": "", "local": {"path": "/task-state"},
+        "persistentVolumeReclaimPolicy": "Delete", "storageClassName": "", "local": {"path": "/task-state"},
         "claimRef": {"namespace": "tenant-agents", "name": "orchestrator-task-state"},
         "nodeAffinity": {"required": {"nodeSelectorTerms": [{"matchFields": [{
             "key": "metadata.name", "operator": "In", "values": ["node"],
@@ -596,7 +596,7 @@ def test_task_state_static_storage_is_opt_in_prebound_and_retained(tmp_path):
         "resources": {"requests": {"storage": "5Gi"}},
     }
     for item in storage.values():
-        assert item["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+        assert "annotations" not in item["metadata"]
         assert item["metadata"]["labels"]["app.kubernetes.io/managed-by"] == "Helm"
 
 

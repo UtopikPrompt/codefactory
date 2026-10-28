@@ -3,7 +3,8 @@ import { test, expect } from '@playwright/test'
 const task = {
     task_id: 'issue-12345678901234567890123456789012', repo: 'example/verified-repository',
     issue_number: 128, status: 'completed', attempts: 2, lifecycle: 'synced', credential_cleanup: 'deleted',
-    config_version: '1', config_hash: 'a'.repeat(64), pr_url: 'https://github.com/example/verified-repository/pull/129'
+    config_version: '1', config_hash: 'a'.repeat(64), pr_url: 'https://github.com/example/verified-repository/pull/129',
+    execution: { job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false }
 }
 const config = {
     version: '1', hash: 'a'.repeat(64), source: 'Git/Helm',
@@ -30,6 +31,8 @@ test('tasks, detail, submission and read-only views fit the viewport', async ({ 
     await page.goto('/')
     await page.getByRole('link', { name: `Open task ${task.task_id}` }).click()
     await expect(page.getByRole('link', { name: 'Human review' })).toBeVisible()
+    await expect(page.getByRole('button', { name: `Collapse task ${task.task_id}` })).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.detail-row')).toBeVisible()
     await page.evaluate(() => document.fonts.ready)
     await expect(page.locator('body')).not.toHaveJSProperty('scrollWidth', 0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -53,6 +56,28 @@ test('tasks, detail, submission and read-only views fit the viewport', async ({ 
     await page.screenshot({ path: testInfo.outputPath('agents.png'), fullPage: true })
     expect(failures).toEqual([])
     expect(await page.evaluate(() => localStorage.length)).toBe(0)
+})
+
+test('failed task details expand beneath the task row and can be collapsed', async ({ page }) => {
+    const failedTask = { ...task, status: 'failed', pr_url: undefined, execution: {
+        job_name: 'worker-job-1', worker_status: 'candidate_failed', validation_status: 'failed',
+        error: 'candidate-validation-not-passed', report_failed: false
+    } }
+    await page.route('**/management/api/**', async route => {
+        const url = new URL(route.request().url())
+        const body = url.pathname.endsWith('/session') ? { subject: 'test-operator' }
+            : url.pathname.endsWith(`/${failedTask.task_id}`) ? failedTask
+                : { tasks: [failedTask], total: 1, limit: 25, offset: 0 }
+        await route.fulfill({ json: body })
+    })
+    await page.goto('/')
+    await page.getByRole('button', { name: `Expand task ${failedTask.task_id}` }).click()
+    const detail = page.getByRole('region', { name: `Task detail for ${failedTask.task_id}` })
+    await expect(detail.getByRole('heading', { name: 'Failure details' })).toBeVisible()
+    await expect(detail.getByText('candidate-validation-not-passed')).toBeVisible()
+    await expect(page.locator('.detail-row')).toBeVisible()
+    await page.getByRole('button', { name: `Collapse task ${failedTask.task_id}` }).click()
+    await expect(detail).toHaveCount(0)
 })
 
 test('access denied state never renders task controls', async ({ page }, testInfo) => {
