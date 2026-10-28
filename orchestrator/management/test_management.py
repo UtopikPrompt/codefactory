@@ -191,7 +191,17 @@ def test_admin_operations_without_repository_access(boundary, tmp_path, reposito
                                                     "total": 1, "limit": 25, "offset": 0})
     assert client.get("/management/api/tasks").json()["tasks"] == [{"task_id": "task-1"}]
     upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "result": {"patch": "private"}})
-    assert client.get("/management/api/tasks/task-1").json() == {"task_id": "task-1", "pr_url": None}
+    assert client.get("/management/api/tasks/task-1").json() == {
+        "task_id": "task-1",
+        "execution": {
+            "job_name": None,
+            "worker_status": None,
+            "validation_status": None,
+            "error": None,
+            "report_failed": False,
+        },
+        "pr_url": None,
+    }
     upstream.reset_mock()
     response = client.post("/management/api/tasks", json={"repo": "org/repo", "issue_number": 7},
                            headers={"Origin": settings["MANAGEMENT_PUBLIC_ORIGIN"], "X-Management-Request": "1"})
