@@ -57,7 +57,7 @@ supervisor:
 worker:
   name: worker
   image: "ghcr.io/utopikprompt/codefactory-worker:latest"
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   labels:
     app: orchestrator
     component: worker

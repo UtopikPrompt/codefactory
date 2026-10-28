@@ -567,6 +567,43 @@ def test_release_namespace_controls_resources_and_rbac_subjects(create):
                 assert subject["namespace"] == "tenant-agents"
 
 
+def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selectors():
+    rendered = subprocess.run(
+        [
+            "helm", "template", "orchestrator", str(CHART),
+            "--namespace", "tenant-agents",
+            "--values", str(CHART / "example.values.yaml"),
+            "--set", "management.enabled=true",
+        ],
+        check=True, capture_output=True, text=True,
+    )
+    resources = [resource for resource in yaml.safe_load_all(rendered.stdout) if resource]
+    owner_kinds = {"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}
+    workloads = [resource for resource in resources if resource["kind"] in owner_kinds]
+    assert {(resource["kind"], resource["metadata"]["name"]) for resource in workloads} == {
+        ("Deployment", "orchestrator-gateway"),
+        ("Deployment", "orchestrator-management"),
+        ("Deployment", "orchestrator-supervisor"),
+        ("Job", "orchestrator-worker"),
+    }
+    for workload in workloads:
+        assert workload["metadata"]["name"].startswith("orchestrator-")
+        if workload["kind"] in {"Deployment", "StatefulSet", "DaemonSet"}:
+            selector = workload["spec"]["selector"]["matchLabels"]
+            pod_labels = workload["spec"]["template"]["metadata"]["labels"]
+            assert selector
+            assert selector.items() <= pod_labels.items()
+
+    supervisor = next(resource for resource in resources
+                      if resource["kind"] == "Deployment"
+                      and resource["metadata"]["name"] == "orchestrator-supervisor")
+    env = {entry["name"]: entry["value"]
+           for entry in supervisor["spec"]["template"]["spec"]["containers"][0]["env"]
+           if "value" in entry}
+    assert env["WORKER_JOB_TEMPLATE"] == "orchestrator-worker"
+    assert env["AGENT_CATALOG_NAME_PREFIX"] == "orchestrator-agent-catalog-"
+
+
 def test_task_state_static_storage_is_opt_in_prebound_with_delete_policy(tmp_path):
     values = {"gateway": {"persistence": {
         "size": "5Gi", "accessMode": "ReadWriteOnce", "storageClassName": "",

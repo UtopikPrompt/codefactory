@@ -377,9 +377,9 @@ def test_pr_policy_fails_closed_and_publication_never_merges(monkeypatch):
 @pytest.mark.parametrize("obsolete_setting", [None, "REPO_GITHUB_PAT", "CODEFACTORY_AUTH_TOKEN", "PR_GITHUB_TOKEN"])
 def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkeypatch, obsolete_setting):
     catalog_hash = "a" * 64
-    ownership_labels = {"controller-uid": "template-uid", "job-name": "code-factory-worker",
+    ownership_labels = {"controller-uid": "template-uid", "job-name": "orchestrator-worker",
                         "batch.kubernetes.io/controller-uid": "template-uid",
-                        "batch.kubernetes.io/job-name": "code-factory-worker"}
+                        "batch.kubernetes.io/job-name": "orchestrator-worker"}
     seed = {"spec": {"suspend": True, "manualSelector": False,
                      "selector": {"matchLabels": {"batch.kubernetes.io/controller-uid": "template-uid"}},
                      "template": {"metadata": {"labels": {"component": "worker", **ownership_labels}}, "spec": {
@@ -392,14 +392,15 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
 
     def api(method, path, body=None):
         requests.append((method, path, body))
-        if method == "GET" and path.endswith("/code-factory-worker"):
+        if method == "GET" and path.endswith("/orchestrator-worker"):
             return seed
         if method == "POST":
             return {"metadata": {"name": body["metadata"]["name"]}}
         return {"data": {}}
 
     monkeypatch.setattr(supervisor_module, "_k8s_request", api)
-    monkeypatch.setenv("AGENT_CATALOG_NAME_PREFIX", "code-factory-agent-catalog-")
+    monkeypatch.delenv("AGENT_CATALOG_NAME_PREFIX", raising=False)
+    monkeypatch.delenv("WORKER_JOB_TEMPLATE", raising=False)
     task = {"task_id": "issue-123", "attempts": 1, "config_hash": catalog_hash,
             "config_version": "1", "payload": '{"repo":"org/repo","repository_auth":"github-app"}', "plan": "test plan",
             "repo": "org/repo", "credential_ref": "task-credential-issue-123"}
@@ -411,7 +412,7 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
         assert not any(method == "POST" for method, _path, _body in requests)
         return
     name = supervisor_module._dispatch_task(task, runtime)
-    assert name == "code-factory-worker-issue-123-1"
+    assert name == "orchestrator-worker-issue-123-1"
     job = requests[-1][2]
     assert "selector" not in job["spec"]
     assert "manualSelector" not in job["spec"]
@@ -423,7 +424,8 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     assert env["TASK_CALLBACK_TOKEN"]["valueFrom"]["secretKeyRef"]["name"] == task["credential_ref"]
     assert env["TASK_REPOSITORY_AUTH"]["valueFrom"]["secretKeyRef"]["key"] == "repository-auth"
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["supervisor_plan"] == "test plan"
-    assert job["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"].endswith(catalog_hash[:12])
+    catalog_name = job["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"]
+    assert catalog_name == f"orchestrator-agent-catalog-{catalog_hash[:12]}"
 
 
 @pytest.mark.parametrize("payload", [{}, {"repository_auth": "pat"}])

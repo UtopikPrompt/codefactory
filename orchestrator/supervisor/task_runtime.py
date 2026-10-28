@@ -72,7 +72,7 @@ def release_task_claim(db, task_id: str, owner: str, requeue: bool = True):
 
 def load_pinned_catalog(task, k8s_request):
     namespace = os.environ.get("POD_NAMESPACE", "orchestrator")
-    prefix = os.environ.get("AGENT_CATALOG_NAME_PREFIX", "code-factory-agent-catalog-")
+    prefix = os.environ.get("AGENT_CATALOG_NAME_PREFIX", "orchestrator-agent-catalog-")
     name = prefix + (task["config_hash"] or "")[:12]
     config = k8s_request("GET", f"/api/v1/namespaces/{namespace}/configmaps/{name}")
     content = config.get("data", {}).get("agent-roles.yaml", "")
@@ -119,9 +119,9 @@ def load_pinned_catalog(task, k8s_request):
 
 def dispatch_task(task, runtime, k8s_request):
     namespace = os.environ.get("POD_NAMESPACE", "orchestrator")
-    template_name = os.environ.get("WORKER_JOB_TEMPLATE", "code-factory-worker")
+    template_name = os.environ.get("WORKER_JOB_TEMPLATE", "orchestrator-worker")
     template = k8s_request("GET", f"/apis/batch/v1/namespaces/{namespace}/jobs/{template_name}")
-    name = f"code-factory-worker-{task['task_id'][-24:]}-{task['attempts']}"
+    name = f"{template_name}-{task['task_id'][-24:]}-{task['attempts']}"
     job = copy.deepcopy(template)
     job["metadata"] = {"name": name, "namespace": namespace,
                        "labels": {"app": "orchestrator", "component": "worker",
@@ -139,7 +139,7 @@ def dispatch_task(task, runtime, k8s_request):
     pod_spec = job_spec["template"]["spec"]
     pod_spec["restartPolicy"] = "Never"
     pod_spec["automountServiceAccountToken"] = False
-    catalog_prefix = os.environ.get("AGENT_CATALOG_NAME_PREFIX", "code-factory-agent-catalog-")
+    catalog_prefix = os.environ.get("AGENT_CATALOG_NAME_PREFIX", "orchestrator-agent-catalog-")
     catalog_name = catalog_prefix + (task["config_hash"] or "")[:12]
     if not task["config_hash"] or not re.fullmatch(r"[a-z0-9-]+", catalog_name):
         raise RuntimeError("task-config-pin-invalid")
