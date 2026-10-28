@@ -69,7 +69,7 @@ spec:
       containers:
         - name: coder
           image: {{ .Values.worker.image | default "ghcr.io/utopikprompt/codefactory-worker:latest" }}
-          imagePullPolicy: Always
+          imagePullPolicy: {{ .Values.worker.imagePullPolicy | default "IfNotPresent" }}
           volumeMounts:
             - name: workspace
               mountPath: /data/task-work

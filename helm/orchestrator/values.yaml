@@ -56,8 +56,6 @@ supervisor:
 # (the worker Job image + resource config).
 worker:
   name: worker
-  image: "ghcr.io/utopikprompt/codefactory-worker:latest"
-  imagePullPolicy: Always
   labels:
     app: orchestrator
     component: worker
@@ -86,8 +84,6 @@ gateway:
     tlsSecretName: "orchestrator-gateway-tls"
   taskCredentialTtlSeconds: 86400
   taskJobTtlSecondsAfterFinished: 86400
-  image: "ghcr.io/utopikprompt/codefactory-gateway:latest"
-  imagePullPolicy: Always
   replicas: 1
   persistence:
     size: "1Gi"
@@ -145,8 +141,6 @@ management:
   authMode: admin
   admin:
     username: admin
-  image: "ghcr.io/utopikprompt/codefactory-management:dev"
-  imagePullPolicy: IfNotPresent
   publicOrigin: ""
   gatewayUrl: ""
   ingress:

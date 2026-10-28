@@ -30,8 +30,8 @@ spec:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
       containers:
         - name: management
-          image: {{ required "management.image is required" .Values.management.image | quote }}
-          imagePullPolicy: {{ .Values.management.imagePullPolicy }}
+          image: {{ .Values.management.image | default "ghcr.io/utopikprompt/codefactory-management:latest" }}
+          imagePullPolicy: {{ .Values.management.imagePullPolicy | default "IfNotPresent" }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
