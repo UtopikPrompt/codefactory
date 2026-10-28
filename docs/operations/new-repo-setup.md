@@ -161,7 +161,7 @@ Empty, whitespace-only, unchanged, malformed, or partial edits cannot succeed.
 Only validation success and a finite judge score meeting the threshold authorize GitHub
 code writes. Heuristic no-key review remains available for legacy explicit-edit jobs,
 but cannot authorize issue-only publication. The pipeline creates a deterministic
-`code-factory/issue-...` branch and PR with `Closes #N`, reuses matching branch/open PR
+`codefactory/issue-...` branch and PR with `Closes #N`, reuses matching branch/open PR
 state, and never force-updates a conflicting branch or recreates a closed PR. A base
 branch change detected before publication fails closed; GitHub updates are not atomic
 with that check, so human review is still required. A network failure after a GitHub

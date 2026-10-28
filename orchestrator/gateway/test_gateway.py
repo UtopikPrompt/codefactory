@@ -1106,7 +1106,7 @@ def test_helm_pins_nonsecret_catalog_runtime_and_p40_routes(helm_values):
     data = catalog["data"]
     digest = server.hashlib.sha256((data["agent-roles.yaml"] + data["agent-roles.schema.json"]
                                     + data["runtime-config.json"]).encode()).hexdigest()
-    assert catalog["metadata"]["annotations"]["code-factory/config-hash"] == digest
+    assert catalog["metadata"]["annotations"]["codefactory/config-hash"] == digest
     assert catalog["metadata"]["name"].endswith(digest[:12])
     assert not any(secret_name in data["runtime-config.json"] for secret_name in
                    ("openai-api-key", "pr-github-token", "coder-api-key", "supervisor-auth-token"))
@@ -1129,7 +1129,7 @@ def test_helm_ingress_tls_termination(mode, secret, profile, helm_values):
         pytest.skip("helm unavailable")
     chart = Path(__file__).resolve().parents[2] / "helm/orchestrator"
     origin = "https://gateway.example.com"
-    values = {"gateway": {"ingress": {"host": "code-factory.local", "tlsTermination": mode, "tlsSecretName": secret}},
+    values = {"gateway": {"ingress": {"host": "codefactory.local", "tlsTermination": mode, "tlsSecretName": secret}},
               "supervisor": {"config": {"acceptor-url": origin}}}
     if profile:
         values = yaml.safe_load((chart / "example.values.yaml").read_text())
@@ -1139,12 +1139,12 @@ def test_helm_ingress_tls_termination(mode, secret, profile, helm_values):
                               input=yaml.safe_dump(values), capture_output=True, text=True, check=True)
     documents = [document for document in yaml.safe_load_all(rendered.stdout) if document]
     ingress = next(document for document in documents if document["kind"] == "Ingress")
-    assert ingress["spec"]["rules"][0]["host"] == "code-factory.local"
+    assert ingress["spec"]["rules"][0]["host"] == "codefactory.local"
     annotations = ingress["metadata"]["annotations"]
     if mode == "internal":
         assert annotations["traefik.ingress.kubernetes.io/router.entrypoints"] == "websecure"
         assert annotations["traefik.ingress.kubernetes.io/router.tls"] == "true"
-        assert ingress["spec"]["tls"] == [{"hosts": ["code-factory.local"], "secretName": secret}]
+        assert ingress["spec"]["tls"] == [{"hosts": ["codefactory.local"], "secretName": secret}]
     else:
         assert annotations["traefik.ingress.kubernetes.io/router.entrypoints"] == "web"
         assert "traefik.ingress.kubernetes.io/router.tls" not in annotations

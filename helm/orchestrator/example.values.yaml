@@ -10,13 +10,13 @@ githubAuth:
   repositories: []
 
 imagePullSecrets:
-- name: code-factory-ghcr-pull
+- name: codefactory-ghcr-pull
 
 gateway:
   transportMode: edge-tls
   ingress:
     tlsTermination: external
-    host: code-factory.local
+    host: codefactory.local
     tlsSecretName: ""
 
 supervisor:

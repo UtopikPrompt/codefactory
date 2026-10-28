@@ -218,7 +218,7 @@ def publish_candidate(task, candidate, runtime, github_request):
         {"path": edit["path"], "mode": "100644", "type": "blob", "content": edit["content"]}
         for edit in edits]})
     task_id = task["task_id"]
-    work_branch = f"code-factory/{task_id[:48]}"
+    work_branch = f"codefactory/{task_id[:48]}"
     ref_path = "/git/ref/heads/" + urllib.parse.quote(work_branch, safe="")
     existing_ref = github_request("GET", repo, ref_path)
     if existing_ref:

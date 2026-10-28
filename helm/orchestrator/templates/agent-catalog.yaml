@@ -8,8 +8,8 @@ metadata:
     app.kubernetes.io/managed-by: Helm
   annotations:
     "helm.sh/resource-policy": keep
-    code-factory/config-version: {{ .Values.agentCatalog.version | default "1" | quote }}
-    code-factory/config-hash: {{ include "orchestrator.agentCatalogHash" . | quote }}
+    codefactory/config-version: {{ .Values.agentCatalog.version | default "1" | quote }}
+    codefactory/config-hash: {{ include "orchestrator.agentCatalogHash" . | quote }}
 data:
   agent-roles.yaml: {{ .Files.Get "files/agent-catalog.yaml" | quote }}
   agent-roles.schema.json: {{ .Files.Get "files/agent-catalog.schema.json" | quote }}

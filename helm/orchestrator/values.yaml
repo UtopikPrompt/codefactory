@@ -15,7 +15,7 @@ githubAuth:
     events: [ issues, workflow_dispatch ]
   repositories: []
 
-# Supervisor (code-factory-supervisor) Deployment — the resident LangGraph loop.
+# Supervisor (codefactory-supervisor) Deployment — the resident LangGraph loop.
 # Shared values for both the supervisor and task-acceptor resources.
 supervisor:
   image: "ghcr.io/utopikprompt/codefactory-supervisor:latest"
@@ -32,7 +32,7 @@ supervisor:
   config:
     # Reachable HTTPS origin for the coder-worker's ACCEPTOR_URL, independent of
     # gateway.ingress.host when an external TLS proxy rewrites Host.
-    acceptor-url: "https://code-factory.local"
+    acceptor-url: "https://codefactory.local"
     allowed-base-branches: ""
     reviewers: ""
     judge-url: "http://judge.inference.svc.cluster.local:8000/v1"
@@ -44,8 +44,8 @@ supervisor:
     worker-parallelism: 1
 
 # Coder-worker (orchestrator-worker Job) image. Kept separate from the
-# supervisor image so the worker Job runs code-factory-worker — never
-# code-factory-supervisor (which is what a shared `orchestrator.image`
+# supervisor image so the worker Job runs codefactory-worker — never
+# codefactory-supervisor (which is what a shared `orchestrator.image`
 # reference would resolve to).
 #
 # Worker pool config (see §2.1.2). worker-roles: ordered role mix per slot
@@ -83,7 +83,7 @@ gateway:
   imagePullPolicy: IfNotPresent
   transportMode: edge-tls
   ingress:
-    host: "code-factory.local"
+    host: "codefactory.local"
     tlsTermination: internal
     tlsSecretName: "orchestrator-gateway-tls"
   taskCredentialTtlSeconds: 86400
@@ -115,7 +115,7 @@ gateway:
 
 # Shared pull secret applied to all containers.
 imagePullSecrets:
-- name: code-factory-ghcr-pull
+- name: codefactory-ghcr-pull
 
 # The `orchestrator-config` ConfigMap key/values consumed by the supervisor
 # loop and the task-acceptor. Mirrors the parent chart's orchestrator.config.
@@ -163,23 +163,23 @@ management:
 # References to pre-provisioned Kubernetes Secrets. No secret values belong in Helm.
 secretRefs:
   githubAppKey:
-    name: code-factory-github-app-key
+    name: codefactory-github-app-key
     key: private-key.pem
   managementServiceToken:
-    name: code-factory-management-service
+    name: codefactory-management-service
     key: token
   supervisorServiceToken:
-    name: code-factory-supervisor-auth
+    name: codefactory-supervisor-auth
     key: token
   openaiApiKey:
-    name: code-factory-openai-api-key
+    name: codefactory-openai-api-key
     key: api-key
   coderApiKey:
-    name: code-factory-coder-api-key
+    name: codefactory-coder-api-key
     key: api-key
   managementAdminPassword:
-    name: code-factory-management-admin-password
+    name: codefactory-management-admin-password
     key: password
   managementGithubClientSecret:
-    name: code-factory-management-github-client-secret
+    name: codefactory-management-github-client-secret
     key: client-secret

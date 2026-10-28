@@ -76,13 +76,13 @@ spec:
             - name: loop-state
               mountPath: /data/loop-state
             - name: agent-catalog
-              mountPath: /etc/code-factory/agent-catalog
+              mountPath: /etc/codefactory/agent-catalog
               readOnly: true
           env:
             - name: CODER_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secretRefs.coderApiKey.name | default "code-factory-coder-api-key" | quote }}
+                  name: {{ .Values.secretRefs.coderApiKey.name | default "codefactory-coder-api-key" | quote }}
                   key: {{ .Values.secretRefs.coderApiKey.key | quote }}
                   optional: true
             - name: ACCEPTOR_URL

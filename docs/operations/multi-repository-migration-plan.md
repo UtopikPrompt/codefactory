@@ -17,7 +17,7 @@ Target ownership agreed for this plan:
 
 | Alias | Repository | Responsibility |
 | --- | --- | --- |
-| App | <https://github.com/UtopikPrompt/code-factory> | Application source, orchestrator chart, application artifacts |
+| App | <https://github.com/UtopikPrompt/codefactory> | Application source, orchestrator chart, application artifacts |
 | Inference | <https://github.com/UtopikLab/inference-platform> | Inference chart and upstream runtime integration |
 | Infra | <https://github.com/UtopikLab/infra-codefactory> | Production configuration, version selection, provisioning and deployment operations |
 
@@ -27,7 +27,7 @@ defaults use `latest`; inference uses an upstream llama.cpp image digest. The
 inference dependency is NVIDIA device-plugin `0.20.1`. CI builds application
 images on PRs and publishes on main pushes to `ghcr.io/utopikprompt/codefactory-*`
 with a seven-character commit tag and `latest`; it does not publish charts.
-Chart `sources` still name `UtopikLab/code-factory`, not the agreed App URL.
+Chart `sources` still name `UtopikLab/codefactory`, not the agreed App URL.
 
 [Deployment notes](deployment-summary.md) describe single-node K3s and prepared,
 not necessarily deployed, changes. They are incident evidence, not a fresh live

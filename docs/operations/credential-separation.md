@@ -217,11 +217,11 @@ it does not install an External Secrets operator or encrypt the local file.
 
 | Secret | Namespace | Required data key | Purpose |
 |---|---|---|---|
-| `code-factory-ghcr-pull` | `inference`, `orchestrator` | `.dockerconfigjson` | GHCR image pulls; type `kubernetes.io/dockerconfigjson` |
-| `code-factory-github-app-key` | `orchestrator` | `private-key.pem` | GitHub App PEM; mounted only by gateway |
-| `code-factory-supervisor-auth` | `orchestrator` | `token` | Independent gateway/supervisor service token |
-| `code-factory-management-service` | `orchestrator` | `token` | Management/gateway service token when management is enabled |
-| `code-factory-management-admin-password` | `orchestrator` | `password` | Human admin login when admin auth is enabled |
+| `codefactory-ghcr-pull` | `inference`, `orchestrator` | `.dockerconfigjson` | GHCR image pulls; type `kubernetes.io/dockerconfigjson` |
+| `codefactory-github-app-key` | `orchestrator` | `private-key.pem` | GitHub App PEM; mounted only by gateway |
+| `codefactory-supervisor-auth` | `orchestrator` | `token` | Independent gateway/supervisor service token |
+| `codefactory-management-service` | `orchestrator` | `token` | Management/gateway service token when management is enabled |
+| `codefactory-management-admin-password` | `orchestrator` | `password` | Human admin login when admin auth is enabled |
 | configured model-key Secret | `orchestrator` | `api-key` | Optional OpenAI/coder endpoint credentials |
 | configured OAuth client Secret | `orchestrator` | `client-secret` | Optional management GitHub OAuth |
 

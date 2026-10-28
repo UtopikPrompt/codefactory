@@ -1,4 +1,4 @@
-# code-factory
+# codefactory
 
 Application source for the Code Factory task orchestration system. This
 repository owns the gateway, management UI/API, supervisor, worker, and the

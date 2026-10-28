@@ -16,7 +16,7 @@ spec:
         app: orchestrator
         component: management
       annotations:
-        code-factory/config-hash: {{ include "orchestrator.agentCatalogHash" . | quote }}
+        codefactory/config-hash: {{ include "orchestrator.agentCatalogHash" . | quote }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -60,7 +60,7 @@ spec:
             - name: MANAGEMENT_GITHUB_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secretRefs.managementGithubClientSecret.name | default "code-factory-management-github-client-secret" | quote }}
+                  name: {{ .Values.secretRefs.managementGithubClientSecret.name | default "codefactory-management-github-client-secret" | quote }}
                   key: {{ .Values.secretRefs.managementGithubClientSecret.key | quote }}
                   optional: true
             {{- end }}

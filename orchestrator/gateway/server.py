@@ -105,7 +105,7 @@ def _create_task_secret(task_id, repo, callback):
     secret = {
         "apiVersion": "v1", "kind": "Secret", "type": "Opaque", "immutable": True,
         "metadata": {"name": name, "namespace": POD_NAMESPACE,
-                     "labels": {"code-factory-task": task_id},
+                     "labels": {"codefactory-task": task_id},
                      "annotations": {"repository": repo.lower(), "expires-at": expires_at}},
         "data": {key: base64.b64encode(value.encode()).decode() for key, value in
                  (("repository-auth", "github-app"), ("callback-token", callback),
