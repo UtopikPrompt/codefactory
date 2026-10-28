@@ -56,6 +56,8 @@ supervisor:
 # (the worker Job image + resource config).
 worker:
   name: worker
+  image: "ghcr.io/utopikprompt/codefactory-worker:latest"
+  imagePullPolicy: IfNotPresent
   labels:
     app: orchestrator
     component: worker
@@ -77,6 +79,8 @@ worker:
 # (e.g. `docker buildx build`), exactly like the supervisor and coder-worker
 # images. Overridable via values.
 gateway:
+  image: "ghcr.io/utopikprompt/codefactory-gateway:latest"
+  imagePullPolicy: IfNotPresent
   transportMode: edge-tls
   ingress:
     host: "code-factory.local"
@@ -136,6 +140,8 @@ agentCatalog:
 
 management:
   enabled: false
+  image: "ghcr.io/utopikprompt/codefactory-management:latest"
+  imagePullPolicy: IfNotPresent
   github:
     clientId: ""
   authMode: admin
