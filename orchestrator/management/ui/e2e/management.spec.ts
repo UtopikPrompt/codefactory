@@ -59,10 +59,12 @@ test('tasks, detail, submission and read-only views fit the viewport', async ({ 
 })
 
 test('failed task details expand beneath the task row and can be collapsed', async ({ page }) => {
-    const failedTask = { ...task, status: 'failed', pr_url: undefined, execution: {
-        job_name: 'worker-job-1', worker_status: 'candidate_failed', validation_status: 'failed',
-        error: 'candidate-validation-not-passed', report_failed: false
-    } }
+    const failedTask = {
+        ...task, status: 'failed', pr_url: undefined, execution: {
+            job_name: 'worker-job-1', worker_status: 'candidate_failed', validation_status: 'failed',
+            error: 'candidate-validation-not-passed', report_failed: false
+        }
+    }
     await page.route('**/management/api/**', async route => {
         const url = new URL(route.request().url())
         const body = url.pathname.endsWith('/session') ? { subject: 'test-operator' }

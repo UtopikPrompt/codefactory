@@ -532,7 +532,7 @@ tr.selected td {
     font-size: 12px;
 }
 
-.execution-steps li > span {
+.execution-steps li>span {
     color: var(--muted);
 }
 

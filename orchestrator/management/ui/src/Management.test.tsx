@@ -15,9 +15,11 @@ let connected = true
 beforeEach(() => {
     window.location.hash = '/tasks'
     calls = []; status = 200; repositories = ['org/repo']; connected = true; taskResponse = { tasks: [task], total: 1, limit: 25, offset: 0 }
-    taskDetailResponse = { ...task, status: 'completed', pr_url: 'https://github.com/org/repo/pull/8', execution: {
-        job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false
-    } }
+    taskDetailResponse = {
+        ...task, status: 'completed', pr_url: 'https://github.com/org/repo/pull/8', execution: {
+            job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false
+        }
+    }
     vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
         calls.push([url, options])
         const body = url.endsWith('/github/session') ? { connected, configured: true }
@@ -50,10 +52,12 @@ test('opens task details inline and preserves task routes', async () => {
 
 test('shows structured execution steps and a failed task error without raw payloads', async () => {
     taskResponse = { tasks: [{ ...task, status: 'failed', attempts: 2, lifecycle: 'synced' }], total: 1, limit: 25, offset: 0 }
-    taskDetailResponse = { ...task, status: 'failed', attempts: 2, lifecycle: 'synced', execution: {
-        job_name: 'worker-job-1', worker_status: 'candidate_failed', validation_status: 'failed',
-        error: 'candidate-validation-not-passed', report_failed: false
-    } }
+    taskDetailResponse = {
+        ...task, status: 'failed', attempts: 2, lifecycle: 'synced', execution: {
+            job_name: 'worker-job-1', worker_status: 'candidate_failed', validation_status: 'failed',
+            error: 'candidate-validation-not-passed', report_failed: false
+        }
+    }
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Expand task task-1' }))
