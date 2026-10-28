@@ -97,6 +97,23 @@ test('has honest empty and read-only model states', async () => {
     expect(screen.queryByRole('button', { name: /save|deploy/i })).not.toBeInTheDocument()
 })
 
+test('places management route links in a top menu with an active page', async () => {
+    const user = userEvent.setup()
+    mount()
+    const navigation = await screen.findByRole('navigation', { name: 'Management' })
+    const main = screen.getByRole('main', { name: '' })
+    expect(navigation.parentElement).toBe(main.parentElement)
+    expect(navigation.nextElementSibling).toBe(main)
+    expect(within(navigation).getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '#/tasks')
+    expect(within(navigation).getByRole('link', { name: 'Tasks' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('link', { name: 'Models' })).toHaveAttribute('href', '#/models')
+    expect(within(navigation).getByRole('link', { name: 'Agents' })).toHaveAttribute('href', '#/agents')
+
+    await user.click(within(navigation).getByRole('link', { name: 'Agents' }))
+    expect(within(navigation).getByRole('link', { name: 'Agents' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('link', { name: 'Tasks' })).not.toHaveAttribute('aria-current')
+})
+
 test('dynamic submission accepts a repository name after GitHub connection', async () => {
     repositories = []
     const user = userEvent.setup()
