@@ -198,8 +198,8 @@ issue text into shell. `id-token: write` is required.
 ## Step 2: Verify Actions Identity
 
 The canonical workflow sets public, literal step environment values:
-- `CODEFACTORY_URL`: `https://code-factory.utopiklab.com`
-- `CODEFACTORY_OIDC_AUDIENCE`: `https://code-factory.utopiklab.com/tasks`
+- `CODEFACTORY_URL`: `https://codefactory.utopiklab.com`
+- `CODEFACTORY_OIDC_AUDIENCE`: `https://codefactory.utopiklab.com/tasks`
 
 No Actions URL secret or audience variable is required. After completing App/policy
 setup, verify that `githubAuth.audience` matches the workflow audience exactly.

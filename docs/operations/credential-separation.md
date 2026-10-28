@@ -42,8 +42,8 @@ Before a separately authorized rollout:
 5. In each source repository install the canonical
    [drain workflow](../../.github/workflows/drain.yaml) through a separately
    authorized remote change. It sets the public gateway URL
-   `https://code-factory.utopiklab.com` and audience
-   `https://code-factory.utopiklab.com/tasks` directly in its step environment;
+   `https://codefactory.utopiklab.com` and audience
+   `https://codefactory.utopiklab.com/tasks` directly in its step environment;
    no Actions URL secret or audience variable is required. Verify the audience
    matches `githubAuth.audience`. It always requests OIDC with `id-token: write`.
 

@@ -13,8 +13,8 @@ For each source repository:
    workflow/ref/subject/event bindings. Both issue and manual retry events need
    their own bindings. Repository names alone do not authorize a signed identity.
 3. Install the canonical [drain workflow](../../.github/workflows/drain.yaml).
-   It sets `CODEFACTORY_URL` to `https://code-factory.utopiklab.com` and
-   `CODEFACTORY_OIDC_AUDIENCE` to `https://code-factory.utopiklab.com/tasks`
+   It sets `CODEFACTORY_URL` to `https://codefactory.utopiklab.com` and
+   `CODEFACTORY_OIDC_AUDIENCE` to `https://codefactory.utopiklab.com/tasks`
    directly; no Actions URL secret or audience variable is required.
    Verify that the gateway audience matches the literal workflow audience.
    The workflow requires `id-token: write`; it has no mode or PAT fallback.
