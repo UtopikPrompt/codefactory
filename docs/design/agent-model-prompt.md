@@ -7,11 +7,13 @@
 ## The gap
 
 The current design documents *which model* each role should use (see
-`thinktank-plan.md` §2.4), but the supervisor code only carries a `worker-model`
-string and the role tag. Three things are **missing**:
+`thinktank-plan.md` §2.4), but runtime configuration currently provides only
+`supervisor.config.coder-model` and `supervisor.config.judge-model`. The worker
+Job receives `coder-model`; worker roles do not yet have distinct model
+settings. Three things are **missing or partial**:
 
-- **Model** — *partial.* The model matrix exists in the design doc; only the
-  judge's model is present in Helm values. Worker roles have no per-role model.
+- **Model** — *partial.* Helm configures the judge model and one coder model
+  shared by worker roles. There is no per-role model map yet.
 - **Prompt** — *missing.* There is no role-specific instruction text. The
   `instruction` field in the spawn payload is absent.
 - **Tools** — *missing.* There is no supervisor tool registry. The supervisor
@@ -20,9 +22,10 @@ string and the role tag. Three things are **missing**:
 
 ## The three implementation items
 
-1. **Per-role model.** Add a model map to `values.yaml` (e.g.
-   `workers.worker-models: { coder: "...", test: "...", ... }`) so each role
-   resolves its own model instead of sharing one `worker-model`.
+1. **Per-role model.** As a future change, add a model map to `values.yaml`
+  (e.g. `workers.models: { coder: "...", refactor: "...", test: "..." }`)
+  so each worker role can resolve its own model instead of sharing
+  `supervisor.config.coder-model`.
 2. **Role-specific prompts.** Add a prompt map to `values.yaml` (e.g.
    `workers.worker-prompts: { coder: "...", test: "...", ... }`) and render it
    into the spawn payload so `build_role_payload` carries the right instruction.

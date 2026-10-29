@@ -53,9 +53,8 @@ supervisor:
 # Worker pool config (see §2.1.2). worker-roles: ordered role mix per slot
 # (coder/refactor/test) — matches the supervisor's role_assignment() mix
 # (Includes 'refactor' so the mix is complete; worker-count is set at
-# runtime via the WORKER_COUNT env var). worker-model + worker-roles are
-# folded into this block so templates can reference .Values.worker.*
-# (the worker Job image + resource config).
+# runtime via the WORKER_COUNT env var). Worker Job image and role settings
+# are grouped here.
 worker:
   name: worker
   image: "ghcr.io/utopikprompt/codefactory-worker:latest"
@@ -67,7 +66,6 @@ worker:
   - coder
   - refactor
   - test
-  worker-model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
   coderUrl: ""
   # Null enables native preparation only for the corresponding default router URL.
   coderNativeDownload: null

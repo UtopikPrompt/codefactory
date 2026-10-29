@@ -49,7 +49,7 @@ Worker configuration and mutable Job spec; the supervisor creates one Job per ta
           (dict "name" "ACCEPTOR_URL" "valueFrom" (dict "configMapKeyRef" (dict
             "name" (printf "%s-config" .Chart.Name) "key" "acceptor-url")))
           (dict "name" "CODER_URL" "value" $coderUrl)
-          (dict "name" "CODER_MODEL" "value" (index .Values.worker "worker-model"))
+          (dict "name" "CODER_MODEL" "value" (index $m "coder-model"))
           (dict "name" "CODER_NATIVE_DOWNLOAD" "value" ($coderNative | toString))
           (dict "name" "WORKER_ROLE" "value" "coder")
           (dict "name" "AGENT_CONFIG_VERSION" "value" (.Values.agentCatalog.version | default "1" | toString))

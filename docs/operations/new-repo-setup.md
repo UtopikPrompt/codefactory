@@ -39,9 +39,9 @@ supervisor:
   config:
     judge-url: "http://judge.inference.svc.cluster.local:8000/v1"
     judge-model: "your-configured-judge-model"
+    coder-model: "your-configured-coder-model"
 worker:
   coderUrl: "http://coder.inference.svc.cluster.local:8000/v1"
-  worker-model: "your-configured-coder-model"
   judgeAcceptThreshold: 0.8
   repoPolicies:
     owner/repository:
@@ -65,7 +65,7 @@ Leave `repoPolicies: {}` for automatic discovery across policy-authorized reposi
 The corresponding worker environment variables are `TASK_REPO_POLICIES`
 (JSON map), `CODER_URL`, `CODER_MODEL`, `JUDGE_URL`, `JUDGE_MODEL`, and
 `JUDGE_ACCEPT_THRESHOLD` (0.8 through 1). Coder URL defaults in Helm to the judge URL;
-the coder model uses the existing `worker-model` setting. `TASK_REPOSITORY_AUTH`
+the coder model uses `supervisor.config.coder-model`. `TASK_REPOSITORY_AUTH`
 identifies the App broker capability from the assigned task Secret; the worker
 renews read-only installation tokens through its callback credential.
 `credentials.models.openaiApiKey` remains separate. Never include credentials in

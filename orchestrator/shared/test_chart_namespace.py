@@ -618,6 +618,7 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
             "--namespace", "tenant-agents",
             "--values", str(CHART / "example.values.yaml"),
             "--set", "management.enabled=true",
+            "--set", "supervisor.config.coder-model=chart-coder-model",
         ],
         check=True, capture_output=True, text=True,
     )
@@ -652,6 +653,9 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
     assert job_spec["suspend"] is True
     assert job_spec["activeDeadlineSeconds"] == 900
     assert job_spec["template"]["spec"]["containers"][0]["image"] == "ghcr.io/utopikprompt/codefactory-worker:latest"
+    worker_env = {entry["name"]: entry.get("value")
+                  for entry in job_spec["template"]["spec"]["containers"][0]["env"]}
+    assert worker_env["CODER_MODEL"] == "chart-coder-model"
     assert not any(resource["kind"] == "Job" for resource in resources)
 
 

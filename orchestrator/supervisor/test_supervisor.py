@@ -640,6 +640,7 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     assert env["TASK_CALLBACK_TOKEN"]["valueFrom"]["secretKeyRef"]["name"] == task["credential_ref"]
     assert env["TASK_REPOSITORY_AUTH"]["valueFrom"]["secretKeyRef"]["key"] == "repository-auth"
     assert env["TASK_ATTEMPT"]["value"] == "1"
+    assert env["CODER_MODEL"]["value"] == runtime["coder_model"]
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["supervisor_plan"] == "test plan"
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["retry_feedback"] == json.loads(task["retry_feedback"])
     assert "retry_feedback" not in json.loads(task["payload"])
