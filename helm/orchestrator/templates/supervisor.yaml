@@ -114,7 +114,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secretRefs.supervisorServiceToken.name | quote }}
                   key: {{ .Values.secretRefs.supervisorServiceToken.key | quote }}
-            - name: WORKER_JOB_TEMPLATE
+            - name: WORKER_JOB_TEMPLATE_CONFIGMAP
               value: {{ printf "%s-worker" .Chart.Name | quote }}
             - name: TASK_JOB_TTL_SECONDS_AFTER_FINISHED
               value: {{ .Values.gateway.taskJobTtlSecondsAfterFinished | quote }}

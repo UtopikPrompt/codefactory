@@ -277,6 +277,39 @@ def test_namespace_is_not_a_chart_value():
     assert "namespace" not in schema["properties"]
 
 
+def test_judge_url_default_and_override_render():
+    default_url = "http://judge.inference.svc.cluster.local:8000/v1"
+    cases = [(None, default_url, True),
+             ("http://inference-judge.inference-dev.svc.cluster.local:8000/v1",
+              "http://inference-judge.inference-dev.svc.cluster.local:8000/v1", False)]
+    for override, expected_url, expected_native in cases:
+        command = ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator"]
+        if override:
+            command.extend(["--set", f"supervisor.config.judge-url={override}"])
+        rendered = subprocess.run(command, capture_output=True, text=True, check=True)
+        documents = [document for document in yaml.safe_load_all(rendered.stdout) if document]
+        config = next(document for document in documents if document["kind"] == "ConfigMap"
+                      and document["metadata"]["name"] == "orchestrator-config")
+        catalog = next(document for document in documents if document["kind"] == "ConfigMap"
+                       and document["metadata"]["name"].startswith("orchestrator-agent-catalog-"))
+        runtime = json.loads(catalog["data"]["runtime-config.json"])
+        assert config["data"]["judge-url"] == expected_url
+        assert runtime["judge_url"] == expected_url
+        assert runtime["judge_native_download"] is expected_native
+
+
+def test_metrics_are_not_published_by_default_and_require_nodeports():
+    base = ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator"]
+    default_render = subprocess.run(base, capture_output=True, text=True, check=True)
+    resources = [resource for resource in yaml.safe_load_all(default_render.stdout) if resource]
+    assert not any(resource["metadata"]["name"].endswith("-metrics") for resource in resources)
+
+    enabled_without_ports = subprocess.run(
+        [*base, "--set", "metrics.enabled=true"], check=False, capture_output=True, text=True,
+    )
+    assert enabled_without_ports.returncode != 0
+
+
 def test_empty_image_pull_secrets_renders(tmp_path):
     values = yaml.safe_load((CHART / "example.values.yaml").read_text())
     values["imagePullSecrets"] = []
@@ -551,11 +584,20 @@ def test_release_namespace_controls_resources_and_rbac_subjects(create):
             "--set", "management.enabled=true",
             "--set", "management.ingress.enabled=true",
             "--set", "metrics.enabled=true",
+            "--set", "metrics.external.gatewayNodePort=30900",
+            "--set", "metrics.external.supervisorNodePort=30901",
+            "--set", "metrics.external.workerNodePort=30902",
         ],
         check=True, capture_output=True, text=True,
     )
     resources = [resource for resource in yaml.safe_load_all(rendered.stdout) if resource]
     assert sum(resource["kind"] == "Namespace" for resource in resources) == int(create)
+    metrics_services = [resource for resource in resources
+                        if resource["kind"] == "Service"
+                        and resource["metadata"]["name"].endswith("-metrics")]
+    assert {resource["spec"]["ports"][0]["nodePort"] for resource in metrics_services} == {
+        30900, 30901, 30902,
+    }
     for resource in resources:
         if resource["kind"] == "Namespace":
             assert resource["metadata"]["name"] == "tenant-agents"
@@ -578,13 +620,12 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
         check=True, capture_output=True, text=True,
     )
     resources = [resource for resource in yaml.safe_load_all(rendered.stdout) if resource]
-    owner_kinds = {"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}
+    owner_kinds = {"Deployment", "StatefulSet", "DaemonSet", "CronJob"}
     workloads = [resource for resource in resources if resource["kind"] in owner_kinds]
     assert {(resource["kind"], resource["metadata"]["name"]) for resource in workloads} == {
         ("Deployment", "orchestrator-gateway"),
         ("Deployment", "orchestrator-management"),
         ("Deployment", "orchestrator-supervisor"),
-        ("Job", "orchestrator-worker"),
     }
     for workload in workloads:
         assert workload["metadata"]["name"].startswith("orchestrator-")
@@ -600,8 +641,15 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
     env = {entry["name"]: entry["value"]
            for entry in supervisor["spec"]["template"]["spec"]["containers"][0]["env"]
            if "value" in entry}
-    assert env["WORKER_JOB_TEMPLATE"] == "orchestrator-worker"
+    assert env["WORKER_JOB_TEMPLATE_CONFIGMAP"] == "orchestrator-worker"
     assert env["AGENT_CATALOG_NAME_PREFIX"] == "orchestrator-agent-catalog-"
+    worker_template = next(resource for resource in resources
+                           if resource["kind"] == "ConfigMap"
+                           and resource["metadata"]["name"] == "orchestrator-worker")
+    job_spec = json.loads(worker_template["data"]["job-spec.json"])
+    assert job_spec["suspend"] is True
+    assert job_spec["template"]["spec"]["containers"][0]["image"] == "ghcr.io/utopikprompt/codefactory-worker:latest"
+    assert not any(resource["kind"] == "Job" for resource in resources)
 
 
 def test_task_state_static_storage_is_opt_in_prebound_with_delete_policy(tmp_path):

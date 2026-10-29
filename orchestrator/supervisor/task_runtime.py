@@ -119,10 +119,11 @@ def load_pinned_catalog(task, k8s_request):
 
 def dispatch_task(task, runtime, k8s_request):
     namespace = os.environ.get("POD_NAMESPACE", "orchestrator")
-    template_name = os.environ.get("WORKER_JOB_TEMPLATE", "orchestrator-worker")
-    template = k8s_request("GET", f"/apis/batch/v1/namespaces/{namespace}/jobs/{template_name}")
+    template_name = os.environ.get("WORKER_JOB_TEMPLATE_CONFIGMAP", "orchestrator-worker")
+    configmap = k8s_request("GET", f"/api/v1/namespaces/{namespace}/configmaps/{template_name}")
+    template_spec = json.loads(configmap["data"]["job-spec.json"])
     name = f"{template_name}-{task['task_id'][-24:]}-{task['attempts']}"
-    job = copy.deepcopy(template)
+    job = {"apiVersion": "batch/v1", "kind": "Job", "spec": copy.deepcopy(template_spec)}
     job["metadata"] = {"name": name, "namespace": namespace,
                        "labels": {"app": "orchestrator", "component": "worker",
                                   "task-id": task["task_id"], "config-hash": (task["config_hash"] or "unknown")[:63]}}

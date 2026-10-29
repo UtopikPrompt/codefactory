@@ -470,7 +470,7 @@
                         },
                         "judge-url": {
                             "type": "string",
-                            "pattern": "^https?://[^/?#@]+/v1$"
+                            "pattern": "^https?://[^/?#@]+(/v1)?$"
                         },
                         "coder-model": {
                             "type": "string",
@@ -531,6 +531,34 @@
         "metrics": {
             "type": "object",
             "additionalProperties": false,
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "enabled": {
+                                "const": true
+                            }
+                        },
+                        "required": [
+                            "enabled"
+                        ]
+                    },
+                    "then": {
+                        "required": [
+                            "external"
+                        ],
+                        "properties": {
+                            "external": {
+                                "required": [
+                                    "gatewayNodePort",
+                                    "supervisorNodePort",
+                                    "workerNodePort"
+                                ]
+                            }
+                        }
+                    }
+                }
+            ],
             "properties": {
                 "enabled": {
                     "type": "boolean"

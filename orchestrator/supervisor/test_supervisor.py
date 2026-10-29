@@ -380,27 +380,33 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     ownership_labels = {"controller-uid": "template-uid", "job-name": "orchestrator-worker",
                         "batch.kubernetes.io/controller-uid": "template-uid",
                         "batch.kubernetes.io/job-name": "orchestrator-worker"}
-    seed = {"spec": {"suspend": True, "manualSelector": False,
-                     "selector": {"matchLabels": {"batch.kubernetes.io/controller-uid": "template-uid"}},
-                     "template": {"metadata": {"labels": {"component": "worker", **ownership_labels}}, "spec": {
-        "containers": [{"name": "coder", "env": [
-            {"name": "JUDGE_URL", "value": "judge"},
-        ]}], "volumes": [{"name": "agent-catalog", "configMap": {"name": "old"}}]}}}}
+    seed = {"suspend": True, "manualSelector": False,
+            "selector": {"matchLabels": {"batch.kubernetes.io/controller-uid": "template-uid"}},
+            "template": {
+                "metadata": {"labels": {"component": "worker", **ownership_labels}},
+                "spec": {
+                    "containers": [{"name": "coder", "env": [
+                        {"name": "JUDGE_URL", "value": "judge"},
+                    ]}],
+                    "volumes": [{"name": "agent-catalog", "configMap": {"name": "old"}}],
+                },
+            }}
     if obsolete_setting:
-        seed["spec"]["template"]["spec"]["containers"][0]["env"].append({"name": obsolete_setting, "value": "stale-test-only"})
+        seed["template"]["spec"]["containers"][0]["env"].append(
+            {"name": obsolete_setting, "value": "stale-test-only"})
     requests = []
 
     def api(method, path, body=None):
         requests.append((method, path, body))
-        if method == "GET" and path.endswith("/orchestrator-worker"):
-            return seed
+        if method == "GET" and path.endswith("/configmaps/orchestrator-worker"):
+            return {"data": {"job-spec.json": json.dumps(seed)}}
         if method == "POST":
             return {"metadata": {"name": body["metadata"]["name"]}}
         return {"data": {}}
 
     monkeypatch.setattr(supervisor_module, "_k8s_request", api)
     monkeypatch.delenv("AGENT_CATALOG_NAME_PREFIX", raising=False)
-    monkeypatch.delenv("WORKER_JOB_TEMPLATE", raising=False)
+    monkeypatch.delenv("WORKER_JOB_TEMPLATE_CONFIGMAP", raising=False)
     task = {"task_id": "issue-123", "attempts": 1, "config_hash": catalog_hash,
             "config_version": "1", "payload": '{"repo":"org/repo","repository_auth":"github-app"}', "plan": "test plan",
             "repo": "org/repo", "credential_ref": "task-credential-issue-123"}
@@ -414,10 +420,12 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     name = supervisor_module._dispatch_task(task, runtime)
     assert name == "orchestrator-worker-issue-123-1"
     job = requests[-1][2]
+    assert requests[0][1] == "/api/v1/namespaces/orchestrator/configmaps/orchestrator-worker"
+    assert job["kind"] == "Job"
     assert "selector" not in job["spec"]
     assert "manualSelector" not in job["spec"]
     assert job["spec"]["template"]["metadata"]["labels"] == {"component": "worker"}
-    assert seed["spec"]["template"]["metadata"]["labels"] == {"component": "worker", **ownership_labels}
+    assert seed["template"]["metadata"]["labels"] == {"component": "worker", **ownership_labels}
     env = {entry["name"]: entry for entry in job["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert "CODEFACTORY_AUTH_TOKEN" not in env and "JUDGE_URL" not in env
     assert "ALLOWED_REPOS" not in env and "ALLOWED_REPO" not in env

@@ -1,6 +1,5 @@
 {{/*
-Worker: ConfigMap orchestrator-config + Job coder-worker.
-Faithful to orchestrator/worker.yaml (ConfigMap + Job coder-worker).
+Worker configuration and mutable Job spec; the supervisor creates one Job per task.
 */}}
 {{- $judgeUrl := default "http://judge.inference.svc.cluster.local:8000/v1" (index .Values.supervisor.config "judge-url") -}}
 {{- $coderUrl := default (index .Values.supervisor.config "coder-url") .Values.worker.coderUrl -}}
@@ -23,6 +22,51 @@ Faithful to orchestrator/worker.yaml (ConfigMap + Job coder-worker).
   "coder-model" (default "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M" (index .Values.supervisor.config "coder-model"))
   "worker-roles" (index .Values.worker "worker-roles")
 -}}
+{{- $workerJobSpec := dict
+  "suspend" true
+  "parallelism" 2
+  "completions" 8
+  "backoffLimit" 0
+  "template" (dict
+    "metadata" (dict "labels" (dict "app" "orchestrator" "component" "worker"))
+    "spec" (dict
+      "restartPolicy" "Never"
+      "automountServiceAccountToken" false
+      "securityContext" (dict "runAsUser" 1001 "runAsNonRoot" true "fsGroup" 1001)
+      "containers" (list (dict
+        "name" "coder"
+        "image" (.Values.worker.image | default "ghcr.io/utopikprompt/codefactory-worker:latest")
+        "imagePullPolicy" (.Values.worker.imagePullPolicy | default "IfNotPresent")
+        "volumeMounts" (list
+          (dict "name" "workspace" "mountPath" "/data/task-work")
+          (dict "name" "loop-state" "mountPath" "/data/loop-state")
+          (dict "name" "agent-catalog" "mountPath" "/etc/codefactory/agent-catalog" "readOnly" true))
+        "env" (list
+          (dict "name" "CODER_API_KEY" "valueFrom" (dict "secretKeyRef" (dict
+            "name" (.Values.secretRefs.coderApiKey.name | default "codefactory-coder-api-key")
+            "key" .Values.secretRefs.coderApiKey.key "optional" true)))
+          (dict "name" "ACCEPTOR_URL" "valueFrom" (dict "configMapKeyRef" (dict
+            "name" (printf "%s-config" .Chart.Name) "key" "acceptor-url")))
+          (dict "name" "CODER_URL" "value" $coderUrl)
+          (dict "name" "CODER_MODEL" "value" (index .Values.worker "worker-model"))
+          (dict "name" "CODER_NATIVE_DOWNLOAD" "value" ($coderNative | toString))
+          (dict "name" "WORKER_ROLE" "value" "coder")
+          (dict "name" "AGENT_CONFIG_VERSION" "value" (.Values.agentCatalog.version | default "1" | toString))
+          (dict "name" "AGENT_CONFIG_HASH" "value" (include "orchestrator.agentCatalogHash" .))
+          (dict "name" "TASK_REPO_POLICIES" "value" (.Values.worker.repoPolicies | toJson)))
+        "resources" (dict
+          "requests" (dict "cpu" (.Values.supervisor.config.cpuRequest | default "500m")
+                           "memory" (.Values.supervisor.config.memory | default "2Gi"))
+          "limits" (dict "cpu" (.Values.supervisor.config.cpuLimit | default "2500m")
+                         "memory" (.Values.supervisor.config.memoryLimit | default "5Gi")))
+        "ports" (list (dict "name" "metrics" "containerPort" 9000))))
+      "volumes" (list
+        (dict "name" "workspace" "emptyDir" (dict "sizeLimit" "512Mi"))
+        (dict "name" "loop-state" "emptyDir" (dict))
+        (dict "name" "agent-catalog" "configMap" (dict
+          "name" (printf "%s-agent-catalog-%s" .Chart.Name (include "orchestrator.agentCatalogHash" . | trunc 12)))))
+      "imagePullSecrets" .Values.imagePullSecrets))
+-}}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -39,89 +83,14 @@ data:
   {{ $k }}: {{ $v | quote }}
   {{ end }}
 ---
-apiVersion: batch/v1
-kind: Job
+apiVersion: v1
+kind: ConfigMap
 metadata:
   name: {{ .Chart.Name }}-worker
   namespace: {{ .Release.Namespace }}
   labels:
     app: orchestrator
-    component: worker
+    component: worker-template
     app.kubernetes.io/managed-by: Helm
-spec:
-  suspend: true
-  # 2 parallel coder workers, each allowed up to 8 completions.
-  parallelism: 2
-  completions: 8
-  backoffLimit: 0
-  template:
-    metadata:
-      labels:
-        app: orchestrator
-        component: worker
-    spec:
-      restartPolicy: Never
-      automountServiceAccountToken: false
-      securityContext:
-        runAsUser: 1001
-        runAsNonRoot: true
-        fsGroup: 1001
-      containers:
-        - name: coder
-          image: {{ .Values.worker.image | default "ghcr.io/utopikprompt/codefactory-worker:latest" }}
-          imagePullPolicy: {{ .Values.worker.imagePullPolicy | default "IfNotPresent" }}
-          volumeMounts:
-            - name: workspace
-              mountPath: /data/task-work
-            - name: loop-state
-              mountPath: /data/loop-state
-            - name: agent-catalog
-              mountPath: /etc/codefactory/agent-catalog
-              readOnly: true
-          env:
-            - name: CODER_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secretRefs.coderApiKey.name | default "codefactory-coder-api-key" | quote }}
-                  key: {{ .Values.secretRefs.coderApiKey.key | quote }}
-                  optional: true
-            - name: ACCEPTOR_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ .Chart.Name }}-config
-                  key: acceptor-url
-            - name: CODER_URL
-              value: {{ $coderUrl | quote }}
-            - name: CODER_MODEL
-              value: {{ index .Values.worker "worker-model" | quote }}
-            - name: CODER_NATIVE_DOWNLOAD
-              value: {{ $coderNative | quote }}
-            - name: WORKER_ROLE
-              value: coder
-            - name: AGENT_CONFIG_VERSION
-              value: {{ .Values.agentCatalog.version | default "1" | quote }}
-            - name: AGENT_CONFIG_HASH
-              value: {{ include "orchestrator.agentCatalogHash" . | quote }}
-            - name: TASK_REPO_POLICIES
-              value: {{ .Values.worker.repoPolicies | toJson | quote }}
-          resources:
-            requests:
-              cpu: {{ .Values.supervisor.config.cpuRequest | default "500m" }}
-              memory: {{ .Values.supervisor.config.memory | default "2Gi" }}
-            limits:
-              cpu: {{ .Values.supervisor.config.cpuLimit | default "2500m" }}
-              memory: {{ .Values.supervisor.config.memoryLimit | default "5Gi" }}
-          ports:
-            - name: metrics
-              containerPort: 9000
-      volumes:
-        - name: workspace
-          emptyDir:
-            sizeLimit: 512Mi
-        - name: loop-state
-          emptyDir: {}
-        - name: agent-catalog
-          configMap:
-            name: {{ .Chart.Name }}-agent-catalog-{{ include "orchestrator.agentCatalogHash" . | trunc 12 }}
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+data:
+  job-spec.json: {{ $workerJobSpec | toJson | quote }}
