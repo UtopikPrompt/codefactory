@@ -528,7 +528,7 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     ownership_labels = {"controller-uid": "template-uid", "job-name": "orchestrator-worker",
                         "batch.kubernetes.io/controller-uid": "template-uid",
                         "batch.kubernetes.io/job-name": "orchestrator-worker"}
-    seed = {"suspend": True, "manualSelector": False,
+    seed = {"suspend": True, "manualSelector": False, "activeDeadlineSeconds": 900,
             "selector": {"matchLabels": {"batch.kubernetes.io/controller-uid": "template-uid"}},
             "template": {
                 "metadata": {"labels": {"component": "worker", **ownership_labels}},
@@ -575,6 +575,7 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     job = requests[-1][2]
     assert requests[0][1] == "/api/v1/namespaces/orchestrator/configmaps/orchestrator-worker"
     assert job["kind"] == "Job"
+    assert job["spec"]["activeDeadlineSeconds"] == 900
     assert "selector" not in job["spec"]
     assert "manualSelector" not in job["spec"]
     assert job["spec"]["template"]["metadata"]["labels"] == {"component": "worker"}

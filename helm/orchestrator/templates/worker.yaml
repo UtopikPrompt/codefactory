@@ -27,6 +27,7 @@ Worker configuration and mutable Job spec; the supervisor creates one Job per ta
   "parallelism" 2
   "completions" 8
   "backoffLimit" 0
+  "activeDeadlineSeconds" 900
   "template" (dict
     "metadata" (dict "labels" (dict "app" "orchestrator" "component" "worker"))
     "spec" (dict
