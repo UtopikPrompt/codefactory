@@ -25,7 +25,8 @@ def connect_task_database(path, init_lock):
             db.execute("ALTER TABLE tasks ADD COLUMN credential_cleanup TEXT NOT NULL DEFAULT 'retained'")
         for name, declaration in (("attempts", "INTEGER NOT NULL DEFAULT 0"),
                                   ("claim_owner", "TEXT"), ("claimed_at", "REAL"),
-                                  ("config_version", "TEXT"), ("config_hash", "TEXT"), ("plan", "TEXT")):
+                                  ("config_version", "TEXT"), ("config_hash", "TEXT"), ("plan", "TEXT"),
+                                  ("retry_feedback", "TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS task_retry_parent ON tasks(retry_of) WHERE retry_of IS NOT NULL")

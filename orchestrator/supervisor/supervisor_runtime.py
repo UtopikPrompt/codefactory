@@ -5,6 +5,8 @@ import json
 import time
 import uuid
 
+from task_runtime import failure_feedback, requeue_failed_task
+
 
 class SupervisorLoop:
     def __init__(self, supervisor):
@@ -56,6 +58,7 @@ class SupervisorLoop:
             return False
         task_id = task["task_id"]
         runtime = None
+        failure_stage = "supervisor"
         try:
             if json.loads(task["payload"]).get("repository_auth") != "github-app":
                 raise RuntimeError("task-authentication-unsupported")
@@ -86,6 +89,7 @@ class SupervisorLoop:
                 if candidate is None:
                     raise RuntimeError("worker-result-timeout")
             if candidate.get("status") != "candidate":
+                failure_stage = "worker"
                 raise RuntimeError(candidate.get("error", "worker-candidate-failed"))
             candidate = supervisor._verified_candidate_patch(task, candidate)
             score, review = await supervisor._judge_candidate(task, candidate, runtime)
@@ -93,12 +97,14 @@ class SupervisorLoop:
             if not 0 <= threshold <= 1:
                 raise RuntimeError("acceptance-threshold-invalid")
             if score < threshold:
+                feedback = failure_feedback("judge", "judge-rejected", task["attempts"], review)
                 if task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS:
+                    db.execute("UPDATE tasks SET retry_feedback=? WHERE task_id=? AND claim_owner=?",
+                               (feedback, task_id, owner))
                     supervisor._complete_via_gateway(task_id, "failed", runtime,
                                                      error="judge-rejected-after-eight-attempts", score=score, review=review)
                 else:
-                    db.execute("UPDATE tasks SET status='queued', result=NULL, claim_owner=NULL, claimed_at=NULL WHERE task_id=? AND claim_owner=?",
-                               (task_id, owner))
+                    requeue_failed_task(db, task_id, owner, feedback)
                 return True
             if json.loads(task["payload"]).get("repository_auth") != "github-app":
                 raise RuntimeError("task-authentication-unsupported")
@@ -116,14 +122,16 @@ class SupervisorLoop:
                                "task-catalog-schema-invalid", "task-catalog-version-unsupported", "task-catalog-role-set-invalid",
                                "task-catalog-role-invalid", "task-catalog-capability-boundary-invalid"}
             reason = str(error).split(":", 1)[0]
+            feedback = failure_feedback(failure_stage, reason, task["attempts"])
             if task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS or reason in terminal_errors:
+                db.execute("UPDATE tasks SET retry_feedback=? WHERE task_id=? AND claim_owner=?",
+                           (feedback, task_id, owner))
                 try:
                     supervisor._complete_via_gateway(task_id, "failed", runtime, error=str(error)[:1000])
                 except Exception:
                     supervisor.logger.exception("could not persist terminal failure task=%s", task_id)
             else:
-                db.execute("UPDATE tasks SET status='queued', result=NULL, claim_owner=NULL, claimed_at=NULL WHERE task_id=? AND claim_owner=?",
-                           (task_id, owner))
+                requeue_failed_task(db, task_id, owner, feedback)
         finally:
             db.close()
         return True

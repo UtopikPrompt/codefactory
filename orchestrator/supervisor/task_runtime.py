@@ -29,14 +29,50 @@ def task_database(path: str | None = None):
         sync_started REAL NOT NULL DEFAULT 0, credential_ref TEXT, callback_hash TEXT,
         retry_of TEXT, retry_key TEXT, credential_cleanup TEXT NOT NULL DEFAULT 'retained',
         attempts INTEGER NOT NULL DEFAULT 0, claim_owner TEXT, claimed_at REAL,
-        config_version TEXT, config_hash TEXT, plan TEXT)""")
+        config_version TEXT, config_hash TEXT, plan TEXT, retry_feedback TEXT)""")
     columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
     for name, declaration in (("attempts", "INTEGER NOT NULL DEFAULT 0"), ("claim_owner", "TEXT"),
                               ("claimed_at", "REAL"), ("config_version", "TEXT"),
-                              ("config_hash", "TEXT"), ("plan", "TEXT")):
+                              ("config_hash", "TEXT"), ("plan", "TEXT"), ("retry_feedback", "TEXT")):
         if name not in columns:
             db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
     return db
+
+
+def failure_feedback(stage, reason, attempt, review=""):
+    """Keep only closed-vocabulary diagnostics, never raw exceptions or model text."""
+    allowed_reasons = {
+        "no-op-edit", "empty-or-invalid-edits", "invalid-generation-output",
+        "invalid-generated-edit", "edit-outside-policy", "unsafe-edit-path",
+        "protected-edit-path", "secret-in-model-context", "edits-not-applied",
+        "empty-patch", "validation-failed", "validation-output-too-large",
+        "coder-http-error", "worker-result-timeout", "worker-candidate-failed",
+        "candidate-patch-edits-mismatch", "candidate-edit-set-mismatch",
+        "candidate-validation-not-passed", "task-execution-failed",
+    }
+    code = str(reason).split(":", 1)[0]
+    feedback = {"stage": stage, "attempt": min(MAX_TOTAL_ATTEMPTS, max(1, int(attempt))),
+                "reason": code if code in allowed_reasons else "task-execution-failed"}
+    if stage == "judge":
+        feedback["reason"] = "judge-rejected"
+        # Extract topics, not excerpts: redaction alone cannot safely remove arbitrary
+        # source, prompts, credentials, or instructions from a free-form review.
+        text = str(review)[:4000].lower()
+        feedback["review_topics"] = [topic for topic, pattern in (
+            ("tests", r"\b(test\w*|coverage|validation)\b"),
+            ("correctness", r"\b(bug\w*|correct\w*|logic|behavior|requirement\w*)\b"),
+            ("security", r"\b(secur\w*|secret\w*|credential\w*|unsafe)\b"),
+            ("scope", r"\b(scope|unrelated|unnecessary)\b"),
+            ("patch-integrity", r"\b(patch|diff|unchanged|no-op)\b"),
+        ) if re.search(pattern, text)]
+    return json.dumps(feedback, sort_keys=True)
+
+
+def requeue_failed_task(db, task_id, owner, feedback):
+    # Clearing a result and retaining its safe feedback must survive as one write.
+    db.execute("""UPDATE tasks SET status='queued', result=NULL, retry_feedback=?,
+        claim_owner=NULL, claimed_at=NULL WHERE task_id=? AND claim_owner=?""",
+        (feedback, task_id, owner))
 
 
 def claim_queued_task(db, owner: str, now: float | None = None, lease_seconds: int = 900,
@@ -156,6 +192,7 @@ def dispatch_task(task, runtime, k8s_request):
     if assigned_payload.get("repository_auth") != "github-app":
         raise RuntimeError("task-authentication-unsupported")
     assigned_payload["supervisor_plan"] = task["plan"] or ""
+    assigned_payload["retry_feedback"] = json.loads(task["retry_feedback"]) if task["retry_feedback"] else None
     env = [entry for entry in container.get("env", []) if entry.get("name") not in {
         "ASSIGNED_TASK_ID", "ASSIGNED_TASK_PAYLOAD", "TASK_CALLBACK_TOKEN", "TASK_REPOSITORY",
         "TASK_CREDENTIAL_EXPIRES_AT", "TASK_REPOSITORY_AUTH",

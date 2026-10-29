@@ -25,3 +25,28 @@ docker build -f orchestrator/supervisor/Dockerfile \
 	- `GET /metrics` on port `9000`
 - The supervisor remains idle between tasks and exposes Prometheus metrics for
 	external scraping.
+
+## Candidate filtering and retry feedback
+- The coder is asked to return only changed files. Every proposed edit is checked
+  for shape, duplicate paths, path/policy safety and assigned secrets before any
+  no-op is filtered or file is written. The existing `original.strip() ==
+  replacement.strip()` no-op policy is retained: boundary-whitespace-only edits
+  are omitted, not applied. Empty proposals and entirely unchanged batches fail
+  explicitly. Mixed batches retain genuine edits and still require sandbox
+  validation, supervisor patch reconstruction and judge acceptance.
+- No-op diagnostics contain filenames and metadata only; indices and counts refer
+  to the original proposal, while candidate edits/changed_files/patch contain only
+  retained changes.
+- Both SQLite owners migrate the nullable `tasks.retry_feedback` column. Requeue
+  atomically saves the last failure feedback when clearing the worker result.
+  Feedback survives claims, lease recovery, database reopen and manual retry
+  lineage, separately from the original user payload, cached plan and config pin.
+  Dispatch passes it alongside the reused plan to the next coder generation.
+- Feedback is deliberately lossy and bounded (under 512 bytes): stage, attempt,
+  an allowlisted failure code, and, for judge rejection, closed-vocabulary review
+  topics (tests, correctness, security, scope, patch-integrity). Unknown exceptions
+  become `task-execution-failed`; no raw review, traceback, prompt, source or
+  credential is copied into feedback. The attempt distinguishes repeated failures
+  without changing retry limits. Feedback and plans are untrusted generation data,
+  never privileged instructions. This does not guarantee a model will correct an
+  error or choose different edits.

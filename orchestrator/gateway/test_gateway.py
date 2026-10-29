@@ -398,6 +398,10 @@ def finish_failed_task(task_gateway, monkeypatch, task_id):
 def test_retry_preserves_history_and_uses_new_credentials(task_gateway, monkeypatch):
     original = task_request("POST", "/api/v1/tasks/spawn", issue_payload())[1]["task_id"]
     previous = finish_failed_task(task_gateway, monkeypatch, original)
+    feedback = '{"stage":"judge","reason":"judge-rejected","attempt":8,"review_topics":["tests"]}'
+    db = server._task_db()
+    db.execute("UPDATE tasks SET retry_feedback=? WHERE task_id=?", (feedback, original))
+    db.close()
     monkeypatch.setattr(server.secrets, "token_urlsafe", Mock(return_value="new-callback-test-only"))
     code, retried = task_request("POST", f"/api/v1/tasks/{original}/retry", {"retry_key": "manual-1"})
     assert code == 202 and retried["task_id"] != original
@@ -410,6 +414,8 @@ def test_retry_preserves_history_and_uses_new_credentials(task_gateway, monkeypa
     assert parent == previous
     db = server._task_db()
     row = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    assert row["retry_feedback"] == feedback
+    assert "retry_feedback" not in json.loads(row["payload"])
     secret = server._k8s_request("GET", server._secret_path(row["credential_ref"]))
     assert base64.b64decode(secret["data"]["repository-auth"]) == b"github-app"
     assert "new-repo-test-only" not in json.dumps(dict(row))

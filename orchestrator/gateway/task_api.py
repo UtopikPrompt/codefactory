@@ -179,9 +179,9 @@ class TaskAPI:
             credential_ref = "task-credential-" + task_id
             config_version = gateway.os.environ.get("AGENT_CONFIG_VERSION", "1")
             config_hash = gateway.os.environ.get("AGENT_CONFIG_HASH") or gateway.hashlib.sha256(config_version.encode()).hexdigest()
-            db.execute("INSERT INTO tasks(task_id,repo,issue,status,payload,credential_ref,callback_hash,retry_of,retry_key,config_version,config_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO tasks(task_id,repo,issue,status,payload,credential_ref,callback_hash,retry_of,retry_key,config_version,config_hash,retry_feedback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                        (task_id, repo, issue, "queued", gateway.json.dumps(assigned), credential_ref, gateway.hashlib.sha256(callback.encode()).hexdigest(),
-                        retry_of, retry_key, config_version, config_hash))
+                        retry_of, retry_key, config_version, config_hash, parent["retry_feedback"] if retry_of else None))
             db.commit()
             try:
                 credential_uid = gateway._create_task_secret(task_id, repo, callback)
