@@ -47,6 +47,13 @@ def worker_job_spec(documents):
     return json.loads(template["data"]["job-spec.json"])
 
 
+def test_gateway_runtime_image_copies_agent_config():
+    dockerfile = Path(__file__).with_name("Dockerfile").read_text()
+    runtime_copy = next(line for line in dockerfile.splitlines() if line.startswith("COPY server.py"))
+    assert "agent_config.py" in runtime_copy.split()
+    assert runtime_copy.split()[-1] == "/app/"
+
+
 @pytest.fixture
 def task_gateway(monkeypatch, tmp_path):
     monkeypatch.setenv("TASK_DB_PATH", str(tmp_path / "tasks.sqlite3"))
