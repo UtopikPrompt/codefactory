@@ -64,9 +64,9 @@ test('shows failed worker validation and explains feedback inherited by a manual
 test('shows newest operational events first with accurate older-event context and retained rationale', () => {
     render(<Interactions task={{
         ...task, status: 'failed', attempts: 2, events: [
-            { timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed', reason: 'validation-failed', validation_status: 'failed', score: null, review_topics: [] },
-            { timestamp: 1760000050, attempt: 2, actor: 'supervisor', action: 'plan', outcome: 'reused', reason: null, validation_status: null, score: null, review_topics: [] },
-            { timestamp: 1760000100, attempt: 2, actor: 'judge', action: 'review', outcome: 'rejected', reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['tests', 'correctness'] },
+            { timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed', reason: 'validation-failed', validation_status: 'failed', score: null, review_topics: [], failure_details: null },
+            { timestamp: 1760000050, attempt: 2, actor: 'supervisor', action: 'plan', outcome: 'reused', reason: null, validation_status: null, score: null, review_topics: [], failure_details: null },
+            { timestamp: 1760000100, attempt: 2, actor: 'judge', action: 'review', outcome: 'rejected', reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['tests', 'correctness'], failure_details: null },
         ],
     }} />)
     const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
@@ -101,7 +101,7 @@ test('shows a worker-originated task failure as a failure stage, not the transit
         ...task, status: 'failed', attempts: 1,
         events: [{
             timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'task', outcome: 'failed',
-            reason: 'validation-failed', validation_status: null, score: null, review_topics: []
+            reason: 'validation-failed', validation_status: null, score: null, review_topics: [], failure_details: null
         }],
     }} />)
     const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
