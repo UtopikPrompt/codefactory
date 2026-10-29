@@ -107,13 +107,20 @@ def test_metrics_exposition_is_parseable(running_server):
 
 def test_request_metrics_measure_handler_time_and_response_status(monkeypatch, running_server):
     original = server.Handler._handle_get
+    original_record_metrics = server.Handler._record_request_metrics
+    metrics_recorded = threading.Event()
 
     def delayed_handler(handler):
         if handler.path == "/missing":
             time.sleep(0.03)
         original(handler)
 
+    def record_metrics(handler, method, started_at):
+        original_record_metrics(handler, method, started_at)
+        metrics_recorded.set()
+
     monkeypatch.setattr(server.Handler, "_handle_get", delayed_handler)
+    monkeypatch.setattr(server.Handler, "_record_request_metrics", record_metrics)
     duration = server.DURATION.labels(path="other", method="GET")._sum.get()
     errors = server.ERRORS.labels(path="other")._value.get()
     try:
@@ -123,6 +130,7 @@ def test_request_metrics_measure_handler_time_and_response_status(monkeypatch, r
     else:
         raise AssertionError("Expected a 404 response")
 
+    assert metrics_recorded.wait(timeout=5), "request metrics were not recorded"
     assert server.DURATION.labels(path="other", method="GET")._sum.get() - duration >= 0.03
     assert server.ERRORS.labels(path="other")._value.get() == errors + 1
 
