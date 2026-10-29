@@ -12,12 +12,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
-from urllib.request import urlopen
 
 import httpx
 import pytest
 import worker
 from prometheus_client import CollectorRegistry
+from urllib.request import urlopen
 from worker import (
     CodeEditor,
     _extract_edits,
@@ -89,13 +89,6 @@ def test_app_broker_redirect_is_not_followed(monkeypatch):
 
 @pytest.mark.parametrize("initial", [None, "incomplete", "downloading", "unloaded", "loaded"])
 def test_native_model_preparation(monkeypatch, initial):
-    registry = CollectorRegistry()
-    original = worker.MODEL_PREPARATION_DURATION
-    metric = type(original)(
-        original._name, original._documentation,
-        labelnames=original._labelnames, registry=registry,
-    )
-    monkeypatch.setattr(worker, "MODEL_PREPARATION_DURATION", metric)
     model = "owner/new-model-GGUF:Q4_K_M"
     calls = []
     statuses = iter([initial, "downloaded", "unloaded"])
@@ -117,35 +110,15 @@ def test_native_model_preparation(monkeypatch, initial):
         transport=httpx.MockTransport(transport), **kwargs))
     asyncio.run(worker._prepare_native_model("http://model/v1/", model, True))
     assert sum(request.method == "POST" for request in calls) == (initial in (None, "incomplete"))
-    assert registry.get_sample_value(
-        "worker_model_preparation_duration_seconds_count", {"role": "coder"},
-    ) == 1
 
 
 def test_native_model_preparation_disabled(monkeypatch):
-    registry = CollectorRegistry()
-    original = worker.MODEL_PREPARATION_DURATION
-    metric = type(original)(
-        original._name, original._documentation,
-        labelnames=original._labelnames, registry=registry,
-    )
-    monkeypatch.setattr(worker, "MODEL_PREPARATION_DURATION", metric)
     monkeypatch.setattr(worker.httpx, "AsyncClient", Mock(side_effect=AssertionError("No native API expected")))
     asyncio.run(worker._prepare_native_model("https://external/v1", "custom-model", False))
-    assert registry.get_sample_value(
-        "worker_model_preparation_duration_seconds_count", {"role": "coder"},
-    ) is None
 
 
 @pytest.mark.parametrize("failure", ["download", "status", "concurrent", "timeout"])
 def test_native_model_preparation_failures(monkeypatch, failure):
-    registry = CollectorRegistry()
-    original = worker.MODEL_PREPARATION_DURATION
-    metric = type(original)(
-        original._name, original._documentation,
-        labelnames=original._labelnames, registry=registry,
-    )
-    monkeypatch.setattr(worker, "MODEL_PREPARATION_DURATION", metric)
     monkeypatch.setenv("CODER_API_KEY", "model-test-secret")
     monkeypatch.setattr(worker.asyncio, "sleep", AsyncMock(side_effect=TimeoutError if failure == "timeout" else None))
     responses = iter([
@@ -168,9 +141,6 @@ def test_native_model_preparation_failures(monkeypatch, failure):
         with pytest.raises({"download": httpx.HTTPStatusError, "status": worker.TaskFailure,
                             "timeout": TimeoutError}[failure]):
             asyncio.run(prepare())
-    assert registry.get_sample_value(
-        "worker_model_preparation_duration_seconds_count", {"role": "coder"},
-    ) == 1
 
 
 @pytest.mark.parametrize(("status", "outcome"), [
@@ -233,7 +203,6 @@ def test_worker_metrics_server_serves_prometheus_exposition(monkeypatch):
         assert response.status == 200
         assert "worker_tasks_total" in body
         assert "worker_model_tokens_total" in body
-        assert "worker_model_preparation_duration_seconds" in body
     finally:
         httpd.shutdown()
         httpd.server_close()

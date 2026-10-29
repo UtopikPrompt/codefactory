@@ -76,12 +76,6 @@ OUTPUT_TOKEN_RATE = Histogram(
     ["role"],
     buckets=(0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200),
 )
-MODEL_PREPARATION_DURATION = Histogram(
-    "worker_model_preparation_duration_seconds",
-    "Client-observed time spent waiting for enabled native model preparation.",
-    ["role"],
-    buckets=(0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600, 900, 1800),
-)
 
 
 def _worker_role() -> str:
@@ -401,38 +395,32 @@ async def _snapshot(github, editor, sha):
 async def _prepare_native_model(base_url, model, enabled):
     if not enabled:
         return
-    preparation_started = time.monotonic()
-    try:
-        endpoint = base_url.rstrip("/").removesuffix("/v1") + "/models"
-        headers = {"Authorization": "Bearer " + os.environ["CODER_API_KEY"]}
-        async with asyncio.timeout(NATIVE_MODEL_TIMEOUT):
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers) as client:
-                requested = False
-                while True:
-                    response = await client.get(endpoint)
-                    response.raise_for_status()
-                    entry = next((entry for entry in response.json()["data"]
-                                  if entry["id"] == model or model in entry.get("aliases", [])), None)
-                    if entry:
-                        status = entry.get("status", {})
-                        if status.get("failed"):
-                            raise TaskFailure("native-model-download-or-load-failed")
-                        if status.get("value") in ("unloaded", "loaded", "sleeping"):
-                            return
-                    if not requested and (entry is None or entry.get("status", {}).get("value") == "incomplete"):
-                        response = await client.post(endpoint, json={"model": model})
-                        if response.status_code == 400:
-                            detail = response.json().get("error", {}).get("message", "")
-                            if "is already downloading" not in detail and "is running, unload it first" not in detail:
-                                response.raise_for_status()
-                        else:
+    endpoint = base_url.rstrip("/").removesuffix("/v1") + "/models"
+    headers = {"Authorization": "Bearer " + os.environ["CODER_API_KEY"]}
+    async with asyncio.timeout(NATIVE_MODEL_TIMEOUT):
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers) as client:
+            requested = False
+            while True:
+                response = await client.get(endpoint)
+                response.raise_for_status()
+                entry = next((entry for entry in response.json()["data"]
+                              if entry["id"] == model or model in entry.get("aliases", [])), None)
+                if entry:
+                    status = entry.get("status", {})
+                    if status.get("failed"):
+                        raise TaskFailure("native-model-download-or-load-failed")
+                    if status.get("value") in ("unloaded", "loaded", "sleeping"):
+                        return
+                if not requested and (entry is None or entry.get("status", {}).get("value") == "incomplete"):
+                    response = await client.post(endpoint, json={"model": model})
+                    if response.status_code == 400:
+                        detail = response.json().get("error", {}).get("message", "")
+                        if "is already downloading" not in detail and "is running, unload it first" not in detail:
                             response.raise_for_status()
-                        requested = True
-                    await asyncio.sleep(1)
-    finally:
-        MODEL_PREPARATION_DURATION.labels(role=_worker_role()).observe(
-            time.monotonic() - preparation_started,
-        )
+                    else:
+                        response.raise_for_status()
+                    requested = True
+                await asyncio.sleep(1)
 
 
 async def _generate_edits(issue, context, policy, supervisor_plan="", previous_failure=None):
