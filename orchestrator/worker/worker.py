@@ -36,7 +36,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 import openai
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,27 +54,70 @@ POLL_TIMEOUT = 1800.0
 # --------------------------------------------------------------------------- #
 # Application-level observability for the coder worker sidecar. Scraped by the
 # central Prometheus server on port 9000 (kept-vs-defer: no second stack).
-#   * worker_tasks_total  — counter of tasks run, labelled by status
-#   * worker_code_changes_total  — counter of code changes applied
-#   * worker_evaluation_score  — gauge of the last evaluation score
-#   * worker_job_duration_seconds  — histogram of job duration
-#   * worker_last_status  — gauge of the last task status string
-#   * worker_active_jobs  — gauge of in-flight jobs
+#   * worker_tasks_total{role,outcome} — task outcomes for this Job's lifetime
+#   * worker_model_tokens_total{role,direction} — response-reported model usage
+#   * worker_output_tokens_per_second — response output tokens / client request time
+#   * worker_job_duration_seconds{role} — end-to-end worker job duration
+#   * worker_active_jobs{role} — in-flight jobs
 # --------------------------------------------------------------------------- #
-TASKS = Counter("worker_tasks_total", "Total tasks run by the worker, by status.", ["status"])
-CODE_CHANGES = Counter("worker_code_changes_total", "Total code changes applied across all tasks.")
-JOB_DURATION = Histogram("worker_job_duration_seconds", "Duration in seconds of a single worker job.")
-LAST_STATUS = Gauge("worker_last_status", "Status string of the most recent task.", ["status"])
-ACTIVE_JOBS = Gauge("worker_active_jobs", "Number of jobs currently in-flight.")
+TASKS = Counter("worker_tasks_total", "Tasks run by this worker Job, by bounded role and outcome.", ["role", "outcome"])
+CODE_CHANGES = Counter("worker_code_changes_total", "Code changes applied by this worker Job.", ["role"])
+JOB_DURATION = Histogram("worker_job_duration_seconds", "Duration in seconds of a worker job.", ["role"])
+LAST_STATUS = Gauge("worker_last_status", "Outcome of the most recent task in this Job.", ["role", "outcome"])
+ACTIVE_JOBS = Gauge("worker_active_jobs", "Number of jobs currently in-flight, by bounded role.", ["role"])
+MODEL_TOKENS = Counter(
+    "worker_model_tokens_total",
+    "Model tokens reported in actual coder API response usage metadata.",
+    ["role", "direction"],
+)
+OUTPUT_TOKEN_RATE = Histogram(
+    "worker_output_tokens_per_second",
+    "Response-reported output tokens divided by client-observed model request duration.",
+    ["role"],
+    buckets=(0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200),
+)
+MODEL_PREPARATION_DURATION = Histogram(
+    "worker_model_preparation_duration_seconds",
+    "Client-observed time spent waiting for enabled native model preparation.",
+    ["role"],
+    buckets=(0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600, 900, 1800),
+)
+
+
+def _worker_role() -> str:
+    role = os.environ.get("WORKER_ROLE", "coder")
+    return role if role in {"coder", "judge"} else "other"
+
+
+def _record_model_usage(response, request_duration: float) -> None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+
+    def token_count(name):
+        value = getattr(usage, name, None)
+        return value if type(value) is int and value >= 0 else None
+
+    input_tokens = token_count("prompt_tokens")
+    output_tokens = token_count("completion_tokens")
+    total_tokens = token_count("total_tokens")
+    role = _worker_role()
+    for direction, count in (("input", input_tokens), ("output", output_tokens), ("total", total_tokens)):
+        if count is not None:
+            MODEL_TOKENS.labels(role=role, direction=direction).inc(count)
+    if output_tokens is not None and output_tokens > 0 and request_duration > 0:
+        OUTPUT_TOKEN_RATE.labels(role=role).observe(output_tokens / request_duration)
 
 
 async def _record_worker_metrics(task_id: str, final: dict, changed: int, job_start: float) -> None:
     """Record the coder worker's per-task metrics (see §Metrics above)."""
     status = final.get("status", "success")
-    TASKS.labels(status=status).inc()
-    CODE_CHANGES.inc(changed)
-    JOB_DURATION.observe(time.monotonic() - job_start)
-    LAST_STATUS.labels(status=status).set(1)
+    outcome = "success" if status in ("success", "completed", "candidate") else "failure"
+    role = _worker_role()
+    TASKS.labels(role=role, outcome=outcome).inc()
+    CODE_CHANGES.labels(role=role).inc(changed)
+    JOB_DURATION.labels(role=role).observe(time.monotonic() - job_start)
+    LAST_STATUS.labels(role=role, outcome=outcome).set(1)
 # Result helpers
 # --------------------------------------------------------------------------- #
 
@@ -358,32 +401,38 @@ async def _snapshot(github, editor, sha):
 async def _prepare_native_model(base_url, model, enabled):
     if not enabled:
         return
-    endpoint = base_url.rstrip("/").removesuffix("/v1") + "/models"
-    headers = {"Authorization": "Bearer " + os.environ["CODER_API_KEY"]}
-    async with asyncio.timeout(NATIVE_MODEL_TIMEOUT):
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers) as client:
-            requested = False
-            while True:
-                response = await client.get(endpoint)
-                response.raise_for_status()
-                entry = next((entry for entry in response.json()["data"]
-                              if entry["id"] == model or model in entry.get("aliases", [])), None)
-                if entry:
-                    status = entry.get("status", {})
-                    if status.get("failed"):
-                        raise TaskFailure("native-model-download-or-load-failed")
-                    if status.get("value") in ("unloaded", "loaded", "sleeping"):
-                        return
-                if not requested and (entry is None or entry.get("status", {}).get("value") == "incomplete"):
-                    response = await client.post(endpoint, json={"model": model})
-                    if response.status_code == 400:
-                        detail = response.json().get("error", {}).get("message", "")
-                        if "is already downloading" not in detail and "is running, unload it first" not in detail:
+    preparation_started = time.monotonic()
+    try:
+        endpoint = base_url.rstrip("/").removesuffix("/v1") + "/models"
+        headers = {"Authorization": "Bearer " + os.environ["CODER_API_KEY"]}
+        async with asyncio.timeout(NATIVE_MODEL_TIMEOUT):
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers) as client:
+                requested = False
+                while True:
+                    response = await client.get(endpoint)
+                    response.raise_for_status()
+                    entry = next((entry for entry in response.json()["data"]
+                                  if entry["id"] == model or model in entry.get("aliases", [])), None)
+                    if entry:
+                        status = entry.get("status", {})
+                        if status.get("failed"):
+                            raise TaskFailure("native-model-download-or-load-failed")
+                        if status.get("value") in ("unloaded", "loaded", "sleeping"):
+                            return
+                    if not requested and (entry is None or entry.get("status", {}).get("value") == "incomplete"):
+                        response = await client.post(endpoint, json={"model": model})
+                        if response.status_code == 400:
+                            detail = response.json().get("error", {}).get("message", "")
+                            if "is already downloading" not in detail and "is running, unload it first" not in detail:
+                                response.raise_for_status()
+                        else:
                             response.raise_for_status()
-                    else:
-                        response.raise_for_status()
-                    requested = True
-                await asyncio.sleep(1)
+                        requested = True
+                    await asyncio.sleep(1)
+    finally:
+        MODEL_PREPARATION_DURATION.labels(role=_worker_role()).observe(
+            time.monotonic() - preparation_started,
+        )
 
 
 async def _generate_edits(issue, context, policy, supervisor_plan="", previous_failure=None):
@@ -399,6 +448,7 @@ async def _generate_edits(issue, context, policy, supervisor_plan="", previous_f
         async with openai.AsyncOpenAI(api_key=os.environ["CODER_API_KEY"], base_url=os.environ["CODER_URL"],
                                     timeout=NATIVE_MODEL_TIMEOUT if os.environ.get("CODER_NATIVE_DOWNLOAD", "false").lower() == "true" else HTTP_TIMEOUT,
                                     max_retries=0) as coder:
+            request_started = time.monotonic()
             response = await coder.chat.completions.create(
                 model=os.environ["CODER_MODEL"], temperature=0.1, max_tokens=6000,
                 response_format={"type": "json_object"}, messages=[
@@ -406,6 +456,7 @@ async def _generate_edits(issue, context, policy, supervisor_plan="", previous_f
                     {"role": "user", "content": prompt},
                 ],
             )
+            _record_model_usage(response, time.monotonic() - request_started)
     except openai.APIStatusError as exc:
         detail = exc.response.text
         try:
@@ -639,12 +690,12 @@ async def _run_worker(
             raise ValueError("assigned-task-attempt-invalid")
         assigned_attempt = int(attempt_text)
     job_start = time.monotonic()
-    ACTIVE_JOBS.inc()
+    ACTIVE_JOBS.labels(role=_worker_role()).inc()
     try:
         return await _execute_task(client, headers, acceptor_url, worker_id, spawn_payload, assigned_task_id,
                        assigned_attempt, job_start)
     finally:
-        ACTIVE_JOBS.dec()
+        ACTIVE_JOBS.labels(role=_worker_role()).dec()
 
 
 async def _execute_task(client, headers, acceptor_url, worker_id, spawn_payload, assigned_task_id, assigned_attempt, job_start):
@@ -833,9 +884,17 @@ async def main_async(
     return final
 
 
+def _start_metrics_server():
+    return start_http_server(
+        int(os.getenv("WORKER_METRICS_PORT", "9000")),
+        addr=os.getenv("WORKER_METRICS_BIND_HOST", "0.0.0.0"),
+    )
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if "--worker" in args or not args:
+        _start_metrics_server()
         result = asyncio.run(main_async())
         if result.get("error"):
             sys.exit(1)

@@ -62,6 +62,8 @@ class SupervisorLoop:
             db.close()
             return False
         task_id = task["task_id"]
+        started_at = time.monotonic()
+        supervisor.ACTIVE_TASKS.set(1)
         record_task_event(db, task_id, task["attempts"] or 1, "supervisor", "claim", "started")
         runtime = None
         failure_stage = "supervisor"
@@ -164,7 +166,16 @@ class SupervisorLoop:
             else:
                 requeue_failed_task(db, task_id, owner, feedback)
         finally:
-            db.close()
+            try:
+                duration = max(0.0, time.monotonic() - started_at)
+                supervisor.AGENT_TASK_ATTEMPT_DURATION.labels(role="coder").observe(duration)
+                current = db.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+                if current and current["status"] in ("completed", "failed"):
+                    outcome = "success" if current["status"] == "completed" else "failure"
+                    supervisor.AGENT_TASKS.labels(role="coder", outcome=outcome).inc()
+            finally:
+                supervisor.ACTIVE_TASKS.set(0)
+                db.close()
         return True
 
     async def run_forever(self):

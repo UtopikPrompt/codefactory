@@ -32,18 +32,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(http_requests_total[5m])",
-          "legendFormat": "gateway requests/s"
-        },
-        {
-          "refId": "B",
-          "expr": "rate(gateway_tasks_accepted_total[5m])",
-          "legendFormat": "accepted tasks/s"
-        },
-        {
-          "refId": "C",
-          "expr": "rate(worker_tasks_total[5m])",
-          "legendFormat": "worker tasks/s"
+          "expr": "sum by (role, outcome) (rate(orchestrator_agent_tasks_total[5m]))",
+          "legendFormat": "{{role}} / {{outcome}} tasks/s"
         }
       ]
     },
@@ -61,18 +51,18 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "gateway_active_requests_gauge",
-          "legendFormat": "gateway active"
+          "expr": "orchestrator_active_tasks",
+          "legendFormat": "supervisor active"
         },
         {
           "refId": "B",
-          "expr": "worker_active_jobs",
-          "legendFormat": "worker active jobs"
+          "expr": "gateway_tasks_by_status{status=\"queued\"}",
+          "legendFormat": "queued"
         },
         {
           "refId": "C",
           "expr": "gateway_tasks_by_status{status=\"running\"}",
-          "legendFormat": "durable tasks running"
+          "legendFormat": "running"
         }
       ]
     },
@@ -128,8 +118,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "http_request_duration_seconds_sum/http_request_duration_seconds_count",
-          "legendFormat": "avg latency (s)"
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(http_request_duration_seconds_bucket{method=\"GET\"}[5m])))",
+          "legendFormat": "{{path}} p95 (s)"
         }
       ]
     },
@@ -249,7 +239,7 @@
     },
     {
       "id": "11",
-      "title": "Worker: Tasks by Outcome",
+      "title": "Agent Tasks: Cumulative Outcomes",
       "type": "timeseries",
       "gridPos": {
         "h": 6,
@@ -261,14 +251,14 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "worker_tasks_total",
-          "legendFormat": "{{status}}"
+          "expr": "sum by (role, outcome) (orchestrator_agent_tasks_total)",
+          "legendFormat": "{{role}} / {{outcome}}"
         }
       ]
     },
     {
       "id": "12",
-      "title": "Worker: Job Duration (s)",
+      "title": "Agent Task Attempt Duration (s)",
       "type": "timeseries",
       "gridPos": {
         "h": 6,
@@ -280,8 +270,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(worker_job_duration_seconds_sum[5m])/rate(worker_job_duration_seconds_count[5m])",
-          "legendFormat": "job duration"
+          "expr": "histogram_quantile(0.50, sum by (le, role) (rate(orchestrator_agent_task_attempt_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{role}} p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, role) (rate(orchestrator_agent_task_attempt_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{role}} p95"
         }
       ]
     },
@@ -306,7 +301,7 @@
     },
     {
       "id": "14",
-      "title": "Worker: Last Status",
+      "title": "Worker: Last Outcome",
       "type": "timeseries",
       "gridPos": {
         "h": 6,
@@ -319,7 +314,7 @@
         {
           "refId": "A",
           "expr": "worker_last_status",
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{role}} / {{outcome}}"
         }
       ]
     },
@@ -341,8 +336,149 @@
           "legendFormat": "{{status}}"
         }
       ]
+    },
+    {
+      "id": "16",
+      "title": "Agent Task Outcomes (Selected Range)",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": "${prometheus}",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (role, outcome) (increase(orchestrator_agent_tasks_total[$__range]))",
+          "legendFormat": "{{role}} / {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": "17",
+      "title": "Model Tokens Used (Selected Range)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "datasource": "${prometheus}",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (role, direction) (increase(worker_model_tokens_total[$__range]))",
+          "legendFormat": "{{role}} / {{direction}}"
+        }
+      ]
+    },
+    {
+      "id": "18",
+      "title": "Worker Output Throughput (tokens/s)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "datasource": "${prometheus}",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, role) (rate(worker_output_tokens_per_second_bucket[5m])))",
+          "legendFormat": "{{role}} p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, role) (rate(worker_output_tokens_per_second_bucket[5m])))",
+          "legendFormat": "{{role}} p95"
+        }
+      ]
+    },
+    {
+      "id": "19",
+      "title": "Prometheus Scrape Health",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 45
+      },
+      "datasource": "${prometheus}",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up",
+          "legendFormat": "{{job}} / {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": "20",
+      "title": "Gateway Error Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 45
+      },
+      "datasource": "${prometheus}",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (path) (rate(http_request_errors_total[5m]))",
+          "legendFormat": "{{path}} errors/s"
+        }
+      ]
+    },
+    {
+      "id": "21",
+      "title": "Worker: Model Preparation Wait (s)",
+      "description": "Client-observed time spent polling and requesting model preparation; this is not inference-server internal loading time.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "datasource": "${prometheus}",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, role) (rate(worker_model_preparation_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{role}} p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, role) (rate(worker_model_preparation_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{role}} p95"
+        }
+      ]
     }
   ],
+  "templating": {
+    "list": [
+      {
+        "name": "prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "hide": 0,
+        "multi": false,
+        "includeAll": false,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
   "time": {
     "from": "now-1h",
     "to": "now"

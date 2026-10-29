@@ -345,6 +345,35 @@ def test_catalog_failure_consumes_eight_attempts_then_waits_for_lease(monkeypatc
         db.close()
 
 
+def test_terminal_durable_failure_records_bounded_agent_metrics(monkeypatch, tmp_path):
+    path = str(tmp_path / "tasks.sqlite3")
+    db = task_database(path)
+    db.execute("INSERT INTO tasks(task_id,status,payload) VALUES(?,?,?)", ("task", "queued", "{}"))
+    db.close()
+    monkeypatch.setattr(supervisor_module, "task_database", lambda: task_database(path))
+    supervisor_module.AGENT_TASKS.clear()
+    supervisor_module.AGENT_TASK_ATTEMPT_DURATION.clear()
+
+    def complete(task_id, status, *_args, **_kwargs):
+        db = task_database(path)
+        db.execute("UPDATE tasks SET status=? WHERE task_id=?", (status, task_id))
+        db.close()
+
+    monkeypatch.setattr(supervisor_module, "_complete_via_gateway", complete)
+    loop = supervisor_module.SupervisorLoop()
+    assert asyncio.run(loop.process_next_durable_task())
+
+    from prometheus_client import REGISTRY
+
+    assert REGISTRY.get_sample_value(
+        "orchestrator_agent_tasks_total", {"role": "coder", "outcome": "failure"},
+    ) == 1
+    assert REGISTRY.get_sample_value(
+        "orchestrator_agent_task_attempt_duration_seconds_count", {"role": "coder"},
+    ) == 1
+    assert REGISTRY.get_sample_value("orchestrator_active_tasks") == 0
+
+
 def test_pinned_catalog_is_schema_validated_and_role_tools_are_bounded(monkeypatch):
     chart = Path(__file__).resolve().parents[2] / "helm/orchestrator/files"
     content = (chart / "agent-catalog.yaml").read_text()

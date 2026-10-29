@@ -13,6 +13,7 @@ import socket
 import threading
 import time
 from http.server import HTTPServer
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import pytest
@@ -102,6 +103,28 @@ def test_metrics_exposition_is_parseable(running_server):
     lines = body.splitlines()
     assert any(l.startswith("#") for l in lines)
     assert any(l.startswith(("http_", "gateway_")) for l in lines)
+
+
+def test_request_metrics_measure_handler_time_and_response_status(monkeypatch, running_server):
+    original = server.Handler._handle_get
+
+    def delayed_handler(handler):
+        if handler.path == "/missing":
+            time.sleep(0.03)
+        original(handler)
+
+    monkeypatch.setattr(server.Handler, "_handle_get", delayed_handler)
+    duration = server.DURATION.labels(path="other", method="GET")._sum.get()
+    errors = server.ERRORS.labels(path="other")._value.get()
+    try:
+        _get("/missing")
+    except HTTPError as error:
+        assert error.code == 404
+    else:
+        raise AssertionError("Expected a 404 response")
+
+    assert server.DURATION.labels(path="other", method="GET")._sum.get() - duration >= 0.03
+    assert server.ERRORS.labels(path="other")._value.get() == errors + 1
 
 
 # --------------------------------------------------------------------------- #

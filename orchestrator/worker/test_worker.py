@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from urllib.request import urlopen
 
 import httpx
 import pytest
@@ -88,6 +89,13 @@ def test_app_broker_redirect_is_not_followed(monkeypatch):
 
 @pytest.mark.parametrize("initial", [None, "incomplete", "downloading", "unloaded", "loaded"])
 def test_native_model_preparation(monkeypatch, initial):
+    registry = CollectorRegistry()
+    original = worker.MODEL_PREPARATION_DURATION
+    metric = type(original)(
+        original._name, original._documentation,
+        labelnames=original._labelnames, registry=registry,
+    )
+    monkeypatch.setattr(worker, "MODEL_PREPARATION_DURATION", metric)
     model = "owner/new-model-GGUF:Q4_K_M"
     calls = []
     statuses = iter([initial, "downloaded", "unloaded"])
@@ -109,15 +117,35 @@ def test_native_model_preparation(monkeypatch, initial):
         transport=httpx.MockTransport(transport), **kwargs))
     asyncio.run(worker._prepare_native_model("http://model/v1/", model, True))
     assert sum(request.method == "POST" for request in calls) == (initial in (None, "incomplete"))
+    assert registry.get_sample_value(
+        "worker_model_preparation_duration_seconds_count", {"role": "coder"},
+    ) == 1
 
 
 def test_native_model_preparation_disabled(monkeypatch):
+    registry = CollectorRegistry()
+    original = worker.MODEL_PREPARATION_DURATION
+    metric = type(original)(
+        original._name, original._documentation,
+        labelnames=original._labelnames, registry=registry,
+    )
+    monkeypatch.setattr(worker, "MODEL_PREPARATION_DURATION", metric)
     monkeypatch.setattr(worker.httpx, "AsyncClient", Mock(side_effect=AssertionError("No native API expected")))
     asyncio.run(worker._prepare_native_model("https://external/v1", "custom-model", False))
+    assert registry.get_sample_value(
+        "worker_model_preparation_duration_seconds_count", {"role": "coder"},
+    ) is None
 
 
 @pytest.mark.parametrize("failure", ["download", "status", "concurrent", "timeout"])
 def test_native_model_preparation_failures(monkeypatch, failure):
+    registry = CollectorRegistry()
+    original = worker.MODEL_PREPARATION_DURATION
+    metric = type(original)(
+        original._name, original._documentation,
+        labelnames=original._labelnames, registry=registry,
+    )
+    monkeypatch.setattr(worker, "MODEL_PREPARATION_DURATION", metric)
     monkeypatch.setenv("CODER_API_KEY", "model-test-secret")
     monkeypatch.setattr(worker.asyncio, "sleep", AsyncMock(side_effect=TimeoutError if failure == "timeout" else None))
     responses = iter([
@@ -140,12 +168,17 @@ def test_native_model_preparation_failures(monkeypatch, failure):
         with pytest.raises({"download": httpx.HTTPStatusError, "status": worker.TaskFailure,
                             "timeout": TimeoutError}[failure]):
             asyncio.run(prepare())
+    assert registry.get_sample_value(
+        "worker_model_preparation_duration_seconds_count", {"role": "coder"},
+    ) == 1
 
 
-@pytest.mark.parametrize("status", ["success", "failed", "completed"])
-def test_record_worker_metrics_with_string_status(monkeypatch, status):
+@pytest.mark.parametrize(("status", "outcome"), [
+    ("success", "success"), ("failed", "failure"), ("completed", "success"),
+])
+def test_record_worker_metrics_with_string_status(monkeypatch, status, outcome):
     registry = CollectorRegistry()
-    for name in ("TASKS", "CODE_CHANGES", "JOB_DURATION", "LAST_STATUS"):
+    for name in ("TASKS", "CODE_CHANGES", "JOB_DURATION", "LAST_STATUS", "MODEL_TOKENS", "OUTPUT_TOKEN_RATE"):
         original = getattr(worker, name)
         metric = type(original)(
             original._name,
@@ -160,11 +193,50 @@ def test_record_worker_metrics_with_string_status(monkeypatch, status):
         "metrics-task", {"status": status}, changed=2, job_start=100.0,
     ))
 
-    assert registry.get_sample_value("worker_last_status", {"status": status}) == 1
-    assert registry.get_sample_value("worker_tasks_total", {"status": status}) == 1
-    assert registry.get_sample_value("worker_code_changes_total") == 2
-    assert registry.get_sample_value("worker_job_duration_seconds_count") == 1
-    assert registry.get_sample_value("worker_job_duration_seconds_sum") == 10.0
+    labels = {"role": "coder", "outcome": outcome}
+    assert registry.get_sample_value("worker_last_status", labels) == 1
+    assert registry.get_sample_value("worker_tasks_total", labels) == 1
+    assert registry.get_sample_value("worker_code_changes_total", {"role": "coder"}) == 2
+    assert registry.get_sample_value("worker_job_duration_seconds_count", {"role": "coder"}) == 1
+    assert registry.get_sample_value("worker_job_duration_seconds_sum", {"role": "coder"}) == 10.0
+
+
+def test_model_usage_metrics_require_response_usage_and_use_bounded_labels(monkeypatch):
+    registry = CollectorRegistry()
+    for name in ("MODEL_TOKENS", "OUTPUT_TOKEN_RATE"):
+        original = getattr(worker, name)
+        monkeypatch.setattr(worker, name, type(original)(
+            original._name, original._documentation,
+            labelnames=original._labelnames, registry=registry,
+        ))
+    monkeypatch.setenv("WORKER_ROLE", "unbounded-user-value")
+
+    worker._record_model_usage(SimpleNamespace(), 2.0)
+    worker._record_model_usage(SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=12, completion_tokens=8, total_tokens=20,
+    )), 2.0)
+
+    assert registry.get_sample_value("worker_model_tokens_total", {"role": "other", "direction": "input"}) == 12
+    assert registry.get_sample_value("worker_model_tokens_total", {"role": "other", "direction": "output"}) == 8
+    assert registry.get_sample_value("worker_model_tokens_total", {"role": "other", "direction": "total"}) == 20
+    assert registry.get_sample_value("worker_output_tokens_per_second_count", {"role": "other"}) == 1
+    assert registry.get_sample_value("worker_output_tokens_per_second_sum", {"role": "other"}) == 4
+
+
+def test_worker_metrics_server_serves_prometheus_exposition(monkeypatch):
+    monkeypatch.setenv("WORKER_METRICS_PORT", "0")
+    monkeypatch.setenv("WORKER_METRICS_BIND_HOST", "127.0.0.1")
+    httpd, _thread = worker._start_metrics_server()
+    try:
+        with urlopen(f"http://127.0.0.1:{httpd.server_address[1]}/metrics", timeout=5) as response:
+            body = response.read().decode()
+        assert response.status == 200
+        assert "worker_tasks_total" in body
+        assert "worker_model_tokens_total" in body
+        assert "worker_model_preparation_duration_seconds" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 # --------------------------------------------------------------------------- #

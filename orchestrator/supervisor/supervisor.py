@@ -166,6 +166,8 @@ def _complete_via_gateway(task_id: str, status: str, runtime=None, **details):
 #   * orchestrator_supervisor_state  — gauge of the supervisor's status string
 #   * orchestrator_duration_seconds  — histogram of loop duration per task
 #   * orchestrator_active_tasks  — gauge of in-flight tasks
+#   * orchestrator_agent_tasks_total{role,outcome} — durable terminal task outcomes
+#   * orchestrator_agent_task_attempt_duration_seconds{role} — claimed attempt duration
 # --------------------------------------------------------------------------- #
 TASKS = Counter("orchestrator_tasks_total", "Total tasks processed by the supervisor loop.", ["status"])
 ITERATIONS = Counter("orchestrator_iterations_total", "Total loop iterations across all tasks.")
@@ -174,6 +176,16 @@ CURRENT_ITERATION = Gauge("orchestrator_current_iteration", "Supervisor's curren
 SUPERVISOR_STATE = Gauge("orchestrator_supervisor_state", "Supervisor's current lifecycle status string.")
 DURATION = Histogram("orchestrator_duration_seconds", "Duration in seconds of a single task through the loop.")
 ACTIVE_TASKS = Gauge("orchestrator_active_tasks", "Number of tasks currently in-flight.")
+AGENT_TASKS = Counter(
+    "orchestrator_agent_tasks_total",
+    "Durable terminal task outcomes handled by the supervisor, by bounded agent role and outcome.",
+    ["role", "outcome"],
+)
+AGENT_TASK_ATTEMPT_DURATION = Histogram(
+    "orchestrator_agent_task_attempt_duration_seconds",
+    "Wall-clock duration of a claimed durable task attempt, including retries as separate observations.",
+    ["role"],
+)
 # --------------------------------------------------------------------------- #
 
 TaskState = _task_graph.TaskState

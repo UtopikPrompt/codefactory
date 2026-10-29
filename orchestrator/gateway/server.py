@@ -285,8 +285,6 @@ class Handler(BaseHTTPRequestHandler):
         return "/api/v1/tasks/:id" if path.startswith("/api/v1/tasks/") else "other"
 
     def _json(self, status, body):
-        if getattr(self, "command", "POST") == "POST":
-            self._post_record(status)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
@@ -316,21 +314,27 @@ class Handler(BaseHTTPRequestHandler):
     def _task_api(self):
         return TaskAPI(self, sys.modules[__name__])
 
-    def _post_record(self, status):
-        """Record request metrics for the terminal POST response."""
-        # Capture request start time for latency measurement.
-        self.request_time = time.time()
-        REQUESTS.labels(method="POST", path=self._metric_path(), status=str(status)).inc()
+    def send_response(self, code, message=None):
+        self.response_status = code
+        super().send_response(code, message)
+
+    def _record_request_metrics(self, method, started_at):
+        status = self.response_status if self.response_status is not None else 500
+        path = self._metric_path()
+        REQUESTS.labels(method=method, path=path, status=str(status)).inc()
         if status >= 300:
-            ERRORS.labels(path=self._metric_path()).inc()
-        DURATION.labels(path=self._metric_path(), method="do_POST").observe(time.time() - self.request_time)
+            ERRORS.labels(path=path).inc()
+        DURATION.labels(path=path, method=method).observe(max(0.0, time.monotonic() - started_at))
 
     def do_GET(self):
-        # Capture request start time for latency measurement.
-        self.request_time = time.time()
-        # Instrumentation: count request and observe latency.
-        REQUESTS.labels(method="GET", path=self._metric_path(), status="200").inc()
-        DURATION.labels(path=self._metric_path(), method="do_GET").observe(time.time() - self.request_time)
+        started_at = time.monotonic()
+        self.response_status = None
+        try:
+            self._handle_get()
+        finally:
+            self._record_request_metrics("GET", started_at)
+
+    def _handle_get(self):
         logger.info("GET request")
         path = self.path
 
@@ -375,6 +379,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"status":"ok"}')
 
     def do_POST(self):
+        started_at = time.monotonic()
+        self.response_status = None
+        try:
+            self._handle_post()
+        finally:
+            self._record_request_metrics("POST", started_at)
+
+    def _handle_post(self):
         path = urlsplit(self.path).path
         task_callback = (path.startswith("/api/v1/tasks/") and path != "/api/v1/tasks/spawn"
                  and not path.endswith(("/retry", "/sync")))
