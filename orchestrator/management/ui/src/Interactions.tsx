@@ -1,4 +1,4 @@
-import type { FailureDetails, OperationalEvent, Task } from './api'
+import type { OperationalEvent, Task } from './api'
 
 const eventReasons: Record<string, string> = {
     'no-op-edit': 'The worker produced no effective change.',
@@ -78,35 +78,6 @@ function eventActor(event: OperationalEvent) {
     return event.action === 'task' && event.actor !== 'supervisor' ? `Failure stage: ${actor}` : actor
 }
 
-const failureDetailLabels: Record<string, string> = {
-    'validation:nonzero-exit': 'Validation failed',
-    'execution:timeout': 'Execution timed out',
-    'execution:os-error': 'Execution OS error',
-    'execution:json-error': 'Execution returned invalid JSON',
-    'execution:http-error': 'Execution returned an HTTP error',
-    'execution:unexpected': 'Execution failed unexpectedly',
-}
-
-function failureDetailDescription(details: FailureDetails) {
-    const description = failureDetailLabels[`${details.stage}:${details.code}`]
-    if (!description) return null
-
-    const parts = [description]
-    if (typeof details.exit_status === 'number' && Number.isInteger(details.exit_status)
-        && details.exit_status >= -255 && details.exit_status <= 255) {
-        parts.push(`Exit code ${details.exit_status}`)
-    }
-    if (typeof details.duration_ms === 'number' && Number.isInteger(details.duration_ms)
-        && details.duration_ms >= 0 && details.duration_ms <= 600000) {
-        parts.push(`Duration ${details.duration_ms} ms`)
-    }
-    if (typeof details.output_bytes === 'number' && Number.isInteger(details.output_bytes)
-        && details.output_bytes >= 0 && details.output_bytes <= 65536) {
-        parts.push(`Output ${details.output_bytes} bytes`)
-    }
-    return parts.join(' · ')
-}
-
 function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefined }) {
     if (events === undefined || events === null) {
         return <p className="timeline-state" role="status">Operational event history is unavailable from this response.</p>
@@ -126,9 +97,6 @@ function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefin
                     {new Date(event.timestamp * 1000).toLocaleString()}
                 </time>
                 <p>{eventDescription(event)}</p>
-                {event.failure_details && failureDetailDescription(event.failure_details) && <p>
-                    <strong>Failure details:</strong> {failureDetailDescription(event.failure_details)}
-                </p>}
                 {event.score !== null && <p>Recorded score: {event.score.toFixed(2)} / 1</p>}
                 {event.review_topics.length > 0 && <p>Review topics: {event.review_topics.join(', ')}</p>}
                 <p className="timeline-reason"><strong>Why:</strong> {event.reason ? eventReasons[event.reason] || 'A safe operational reason was recorded.' : 'No reason was recorded for this event.'}</p>

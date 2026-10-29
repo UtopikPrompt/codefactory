@@ -64,9 +64,9 @@ test('shows failed worker validation and explains feedback inherited by a manual
 test('shows newest operational events first with accurate older-event context and retained rationale', () => {
     render(<Interactions task={{
         ...task, status: 'failed', attempts: 2, events: [
-            { timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed', reason: 'validation-failed', validation_status: 'failed', score: null, review_topics: [], failure_details: null },
-            { timestamp: 1760000050, attempt: 2, actor: 'supervisor', action: 'plan', outcome: 'reused', reason: null, validation_status: null, score: null, review_topics: [], failure_details: null },
-            { timestamp: 1760000100, attempt: 2, actor: 'judge', action: 'review', outcome: 'rejected', reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['tests', 'correctness'], failure_details: null },
+            { timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed', reason: 'validation-failed', validation_status: 'failed', score: null, review_topics: [] },
+            { timestamp: 1760000050, attempt: 2, actor: 'supervisor', action: 'plan', outcome: 'reused', reason: null, validation_status: null, score: null, review_topics: [] },
+            { timestamp: 1760000100, attempt: 2, actor: 'judge', action: 'review', outcome: 'rejected', reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['tests', 'correctness'] },
         ],
     }} />)
     const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
@@ -82,7 +82,7 @@ test('shows newest operational events first with accurate older-event context an
     expect(within(flow).getByText('Review topics: tests, correctness')).toBeInTheDocument()
     expect(within(flow).getByText('Recorded score: 0.40 / 1')).toBeInTheDocument()
     expect(within(flow).getByText(/No reason was recorded for this event\./)).toBeInTheDocument()
-    expect(within(items[0]).getByText('Saved plan reused · Attempt 2 · Supervisor')).toBeInTheDocument()
+    expect(within(items[0]).getByText(/Next older event:/)).toHaveTextContent('Saved plan reused · Attempt 2 · Supervisor')
     expect(within(items[2]).getByText(/No earlier event is available in retained history/)).toBeInTheDocument()
     expect(within(flow).queryByText(/prompt|private review/i)).not.toBeInTheDocument()
 })
@@ -101,45 +101,11 @@ test('shows a worker-originated task failure as a failure stage, not the transit
         ...task, status: 'failed', attempts: 1,
         events: [{
             timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'task', outcome: 'failed',
-            reason: 'validation-failed', validation_status: null, score: null, review_topics: [], failure_details: null
+            reason: 'validation-failed', validation_status: null, score: null, review_topics: []
         }],
     }} />)
     const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
     expect(within(flow).getByText('Attempt 1 · Failure stage: Coder (worker)')).toBeInTheDocument()
     expect(within(flow).getByText('The supervisor recorded a terminal task failure.')).toBeInTheDocument()
     expect(within(flow).getByText('Sandbox validation failed.')).toBeInTheDocument()
-})
-
-test('renders only allowlisted worker failure details', () => {
-    const privateDetails = {
-        stage: 'validation' as const,
-        code: 'nonzero-exit' as const,
-        exit_status: 7,
-        duration_ms: 1234,
-        output_bytes: 4096,
-        output: 'PRIVATE raw output',
-        source: 'PRIVATE source',
-        path: 'PRIVATE path',
-        exception_text: 'PRIVATE exception',
-        traceback: 'PRIVATE traceback',
-        credential: 'PRIVATE credential',
-    }
-    render(<Interactions task={{
-        ...task, status: 'failed', attempts: 1, events: [{
-            timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed',
-            reason: null, validation_status: null, score: null, review_topics: [], failure_details: privateDetails,
-        }, {
-            timestamp: 1760000001, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed',
-            reason: null, validation_status: null, score: null, review_topics: [],
-            failure_details: { stage: 'execution', code: 'timeout', duration_ms: 600000, output_bytes: 0 },
-        }],
-    }} />)
-
-    const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
-    expect(within(flow).getByText('Execution timed out · Duration 600000 ms · Output 0 bytes')).toBeInTheDocument()
-    expect(within(flow).getByText('Validation failed · Exit code 7 · Duration 1234 ms · Output 4096 bytes')).toBeInTheDocument()
-    expect(within(flow).getAllByText('Failure details:')).toHaveLength(2)
-    for (const privateValue of ['PRIVATE raw output', 'PRIVATE source', 'PRIVATE path', 'PRIVATE exception', 'PRIVATE traceback', 'PRIVATE credential']) {
-        expect(flow).not.toHaveTextContent(privateValue)
-    }
 })
