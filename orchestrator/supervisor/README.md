@@ -50,3 +50,7 @@ docker build -f orchestrator/supervisor/Dockerfile \
   without changing retry limits. Feedback and plans are untrusted generation data,
   never privileged instructions. This does not guarantee a model will correct an
   error or choose different edits.
+- Candidates scoring from the acceptance threshold up to the configured
+  `judge-review-margin` receive a second critical review from the existing judge;
+  the lower score governs acceptance. The default margin is `0.1`, and `0` disables
+  this extra inference pass. Stronger approvals keep the single-review path.

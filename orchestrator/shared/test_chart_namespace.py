@@ -277,15 +277,16 @@ def test_namespace_is_not_a_chart_value():
     assert "namespace" not in schema["properties"]
 
 
-def test_judge_url_default_and_override_render():
+def test_judge_url_and_review_margin_render():
     default_url = "http://judge.inference.svc.cluster.local:8000/v1"
-    cases = [(None, default_url, True),
+    cases = [(None, default_url, True, 0.1, 0.1),
              ("http://inference-judge.inference-dev.svc.cluster.local:8000/v1",
-              "http://inference-judge.inference-dev.svc.cluster.local:8000/v1", False)]
-    for override, expected_url, expected_native in cases:
+              "http://inference-judge.inference-dev.svc.cluster.local:8000/v1", False, 0.25, 0.25)]
+    for override, expected_url, expected_native, margin, expected_margin in cases:
         command = ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator"]
         if override:
             command.extend(["--set", f"supervisor.config.judge-url={override}"])
+            command.extend(["--set-json", f"supervisor.config.judge-review-margin={margin}"])
         rendered = subprocess.run(command, capture_output=True, text=True, check=True)
         documents = [document for document in yaml.safe_load_all(rendered.stdout) if document]
         config = next(document for document in documents if document["kind"] == "ConfigMap"
@@ -296,6 +297,7 @@ def test_judge_url_default_and_override_render():
         assert config["data"]["judge-url"] == expected_url
         assert runtime["judge_url"] == expected_url
         assert runtime["judge_native_download"] is expected_native
+        assert runtime["judge_review_margin"] == expected_margin
 
 
 def test_metrics_are_not_published_by_default_and_require_nodeports():

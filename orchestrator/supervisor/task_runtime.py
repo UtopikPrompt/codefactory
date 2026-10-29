@@ -197,6 +197,10 @@ def load_pinned_catalog(task, k8s_request):
             or not 0 <= runtime["threshold"] <= 1
             or runtime.get("worker_parallelism") != 1):
         raise RuntimeError("task-runtime-config-invalid")
+    review_margin = runtime.get("judge_review_margin", 0.1)
+    if type(review_margin) not in (float, int) or not 0 <= review_margin <= 1:
+        raise RuntimeError("task-runtime-config-invalid")
+    runtime["judge_review_margin"] = review_margin
     for endpoint in (runtime["acceptor_url"], runtime["coder_url"], runtime["judge_url"]):
         parsed = urllib.parse.urlsplit(endpoint)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:

@@ -485,6 +485,11 @@
                             "minimum": 0,
                             "maximum": 1
                         },
+                        "judge-review-margin": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                        },
                         "max-total-attempts": {
                             "type": "integer",
                             "const": 8

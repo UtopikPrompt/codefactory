@@ -361,7 +361,9 @@ def test_pinned_catalog_is_schema_validated_and_role_tools_are_bounded(monkeypat
         "data": {"agent-roles.yaml": content, "agent-roles.schema.json": schema,
                  "runtime-config.json": runtime}})
     task = {"config_hash": digest, "config_version": "1"}
-    assert supervisor_module._load_pinned_catalog(task)[0]["roles"]["coder"]["endpoint_alias"] == "coder"
+    loaded_catalog, loaded_runtime = supervisor_module._load_pinned_catalog(task)
+    assert loaded_catalog["roles"]["coder"]["endpoint_alias"] == "coder"
+    assert loaded_runtime["judge_review_margin"] == 0.1
 
     invalid = content.replace("spec_version: 1", "spec_version: 2")
     monkeypatch.setattr(supervisor_module, "_k8s_request", lambda *_args: {
@@ -406,6 +408,58 @@ def test_judge_calls_configured_p40_1_endpoint(monkeypatch):
     assert score == 0.9 and review == "valid"
     assert calls[0][0] == "http://p40-1.inference.svc:8000/v1/chat/completions"
     assert calls[0][1]["json"]["model"] == "qwen-judge-32k"
+
+
+@pytest.mark.parametrize("critical_score,expected_score", [(0.92, 0.85), (0.75, 0.75)])
+def test_borderline_candidate_requires_critical_review(monkeypatch, critical_score, expected_score):
+    httpx = supervisor_module.httpx
+    scores = iter([0.85, critical_score])
+    calls = []
+    monkeypatch.setenv("OPENAI_API_KEY", "judge-key")
+
+    def transport(request):
+        calls.append(request)
+        score = next(scores)
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": json.dumps({"score": score, "review": f"review-{score}"}),
+        }}]})
+
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client_class(
+        transport=httpx.MockTransport(transport), **kwargs))
+    runtime = {"judge_url": "http://judge/v1", "judge_model": "judge-model",
+               "judge_native_download": False, "threshold": 0.8, "judge_review_margin": 0.1}
+    candidate = {"validation": {"status": "passed"}, "patch": "diff"}
+    score, review = asyncio.run(supervisor_module._judge_candidate(
+        {"payload": '{"task_id":"task"}'}, candidate, runtime))
+
+    assert score == expected_score
+    assert len(calls) == 2
+    assert "Try to disprove approval" in json.loads(calls[1].content)["messages"][0]["content"]
+    assert "review-0.85" in review and f"review-{critical_score}" in review
+
+
+def test_clear_candidate_skips_critical_review(monkeypatch):
+    httpx = supervisor_module.httpx
+    calls = []
+    monkeypatch.setenv("OPENAI_API_KEY", "judge-key")
+
+    def transport(request):
+        calls.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": '{"score":0.95,"review":"strong"}',
+        }}]})
+
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client_class(
+        transport=httpx.MockTransport(transport), **kwargs))
+    runtime = {"judge_url": "http://judge/v1", "judge_model": "judge-model",
+               "judge_native_download": False, "threshold": 0.8, "judge_review_margin": 0.1}
+    score, review = asyncio.run(supervisor_module._judge_candidate(
+        {"payload": '{"task_id":"task"}'}, {"validation": {"status": "passed"}}, runtime))
+
+    assert (score, review) == (0.95, "strong")
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("operation", ["judge", "plan"])

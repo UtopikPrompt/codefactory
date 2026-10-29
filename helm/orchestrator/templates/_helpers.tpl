@@ -19,6 +19,7 @@
 	"coder_model" (index .Values.supervisor.config "coder-model")
 	"judge_model" (index .Values.supervisor.config "judge-model")
 	"threshold" (index .Values.supervisor.config "acceptance-threshold")
+	"judge_review_margin" (index .Values.supervisor.config "judge-review-margin")
 	"max_total_attempts" (index .Values.supervisor.config "max-total-attempts")
 	"allowed_base_branches" (index .Values.supervisor.config "allowed-base-branches")
 	"reviewers" (index .Values.supervisor.config "reviewers")

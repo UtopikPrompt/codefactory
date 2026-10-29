@@ -40,6 +40,8 @@ supervisor:
     judge-model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
     coder-model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
     acceptance-threshold: 0.8
+    # Borderline accepted candidates get a second critical review; set 0 to disable.
+    judge-review-margin: 0.1
     max-total-attempts: 8
     worker-parallelism: 1
 
