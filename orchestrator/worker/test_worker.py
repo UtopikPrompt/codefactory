@@ -12,12 +12,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from urllib.request import urlopen
 
 import httpx
 import pytest
 import worker
 from prometheus_client import CollectorRegistry
-from urllib.request import urlopen
 from worker import (
     CodeEditor,
     _extract_edits,
