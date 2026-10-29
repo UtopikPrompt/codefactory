@@ -576,14 +576,25 @@ tr.selected td {
 }
 
 .interaction-timeline-section {
-    margin-top: 20px;
+    margin: 14px 0 18px;
 }
 
 .interaction-timeline-section h4 {
-    margin-bottom: 12px;
+    margin-bottom: 4px;
+    font-size: 15px;
+}
+
+.timeline-caption {
+    margin: 0 0 12px;
+    color: var(--muted);
+    font-size: 12px;
 }
 
 .timeline-state {
+    margin: 0;
+    padding: 12px 14px;
+    border-left: 3px solid var(--border);
+    background: #edf1f0;
     color: var(--muted);
 }
 
@@ -635,6 +646,20 @@ tr.selected td {
 
 .interaction-timeline p {
     margin: 6px 0 0;
+}
+
+.interaction-timeline .timeline-reason,
+.interaction-timeline .timeline-next {
+    font-size: 12px;
+}
+
+.interaction-timeline .timeline-reason strong,
+.interaction-timeline .timeline-next strong {
+    font-weight: 600;
+}
+
+.interaction-timeline .timeline-next {
+    color: var(--accent);
 }
 
 .detail-section {

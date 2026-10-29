@@ -63,24 +63,45 @@ test('shows failed worker validation and explains feedback inherited by a manual
 
 test('shows actual operational events in chronological attempt context with retained rationale', () => {
     render(<Interactions task={{
-        ...task, attempts: 2, events: [
+        ...task, status: 'failed', attempts: 2, events: [
             { timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed', reason: 'validation-failed', validation_status: 'failed', score: null, review_topics: [] },
             { timestamp: 1760000050, attempt: 2, actor: 'supervisor', action: 'plan', outcome: 'reused', reason: null, validation_status: null, score: null, review_topics: [] },
             { timestamp: 1760000100, attempt: 2, actor: 'judge', action: 'review', outcome: 'rejected', reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['tests', 'correctness'] },
         ],
     }} />)
-    const timeline = screen.getByRole('list', { name: 'Operational event timeline' })
-    expect(within(timeline).getByText('Attempt 1 · worker')).toBeInTheDocument()
-    expect(within(timeline).getByText('Attempt 2 · judge')).toBeInTheDocument()
-    expect(within(timeline).getByText('Saved plan reused')).toBeInTheDocument()
-    expect(within(timeline).getByText('Sandbox validation failed.')).toBeInTheDocument()
-    expect(within(timeline).getByText('The judge scored the candidate below the acceptance threshold.')).toBeInTheDocument()
-    expect(within(timeline).getByText('Review topics: tests, correctness')).toBeInTheDocument()
-    expect(within(timeline).getByText('Recorded score: 0.40 / 1')).toBeInTheDocument()
-    expect(within(timeline).queryByText(/prompt|private review/i)).not.toBeInTheDocument()
+    const flow = screen.getByRole('list', { name: 'Recorded execution flow, chronological' })
+    expect(within(flow).getByText('Attempt 1 · Coder (worker)')).toBeInTheDocument()
+    expect(within(flow).getByText('Attempt 2 · Judge')).toBeInTheDocument()
+    expect(within(flow).getByText('Saved plan reused')).toBeInTheDocument()
+    expect(within(flow).getByText('Sandbox validation failed.')).toBeInTheDocument()
+    expect(within(flow).getByText('The judge scored the candidate below the acceptance threshold.')).toBeInTheDocument()
+    expect(within(flow).getByText('Review topics: tests, correctness')).toBeInTheDocument()
+    expect(within(flow).getByText('Recorded score: 0.40 / 1')).toBeInTheDocument()
+    expect(within(flow).getByText(/No reason was recorded for this event\./)).toBeInTheDocument()
+    expect(within(flow).getByText(/Saved plan reused · Attempt 2 · Supervisor/)).toBeInTheDocument()
+    expect(within(flow).getByText(/No later event is available in retained history/)).toBeInTheDocument()
+    expect(within(flow).queryByText(/prompt|private review/i)).not.toBeInTheDocument()
 })
 
 test('distinguishes an empty retained timeline from an unavailable timeline', () => {
-    render(<Interactions task={{ ...task, events: [] }} />)
-    expect(screen.getByText('No operational events recorded yet.')).toBeInTheDocument()
+    const { rerender } = render(<Interactions task={{ ...task, events: [] }} />)
+    expect(screen.getByText(/No operational events are retained for this task/)).toBeInTheDocument()
+    rerender(<Interactions task={{ ...task, status: 'completed', events: [] }} />)
+    expect(screen.getByText(/Task status alone does not confirm which agents ran/)).toBeInTheDocument()
+    rerender(<Interactions task={{ ...task, events: null }} />)
+    expect(screen.getByText('Operational event history is unavailable from this response.')).toBeInTheDocument()
+})
+
+test('shows a worker-originated task failure as a failure stage, not the transition actor', () => {
+    render(<Interactions task={{
+        ...task, status: 'failed', attempts: 1,
+        events: [{
+            timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'task', outcome: 'failed',
+            reason: 'validation-failed', validation_status: null, score: null, review_topics: []
+        }],
+    }} />)
+    const flow = screen.getByRole('list', { name: 'Recorded execution flow, chronological' })
+    expect(within(flow).getByText('Attempt 1 · Failure stage: Coder (worker)')).toBeInTheDocument()
+    expect(within(flow).getByText('The supervisor recorded a terminal task failure.')).toBeInTheDocument()
+    expect(within(flow).getByText('Sandbox validation failed.')).toBeInTheDocument()
 })

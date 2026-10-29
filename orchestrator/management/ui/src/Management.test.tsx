@@ -51,6 +51,25 @@ test('opens task details inline and preserves task routes', async () => {
     await waitFor(() => expect(calls.some(([url]) => url.includes('status=running'))).toBe(true))
 })
 
+test('shows chronological execution flow at the top of expanded task detail', async () => {
+    taskDetailResponse = {
+        ...task, status: 'running', attempts: 1,
+        events: [
+            { timestamp: 1760000000, attempt: 1, actor: 'supervisor', action: 'claim', outcome: 'started', reason: null, validation_status: null, score: null, review_topics: [] },
+            { timestamp: 1760000001, attempt: 1, actor: 'supervisor', action: 'plan', outcome: 'recorded', reason: null, validation_status: null, score: null, review_topics: [] },
+        ],
+    }
+    const user = userEvent.setup()
+    mount()
+    await user.click(await screen.findByRole('button', { name: 'Expand task task-1' }))
+    const detail = await screen.findByRole('region', { name: 'Task detail for task-1' })
+    const flow = within(detail).getByRole('list', { name: 'Recorded execution flow, chronological' })
+    expect(within(flow).getByText('Supervisor claimed this attempt')).toBeInTheDocument()
+    expect(within(flow).getByText(/Plan recorded · Attempt 1 · Supervisor/)).toBeInTheDocument()
+    expect(within(detail).getByText('No reason was recorded for this event.')).toBeInTheDocument()
+    expect(flow.compareDocumentPosition(within(detail).getByRole('list', { name: 'Recorded agent activity' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
 test('shows structured execution steps and a failed task error without raw payloads', async () => {
     taskResponse = { tasks: [{ ...task, status: 'failed', attempts: 2, lifecycle: 'synced' }], total: 1, limit: 25, offset: 0 }
     taskDetailResponse = {
