@@ -29,7 +29,7 @@ from supervisor import (
     should_retry,
     task_database,
 )
-from task_runtime import failure_feedback, record_task_event
+from task_runtime import failure_feedback, record_task_event, safe_judge_review
 
 
 def test_operational_events_are_bounded_and_keep_attempt_attribution(tmp_path):
@@ -203,6 +203,15 @@ def test_retry_feedback_is_bounded_closed_vocabulary(reason):
                      "review_topics": ["tests", "correctness", "security", "scope", "patch-integrity"]}
 
 
+def test_judge_review_summary_is_bounded_and_rejects_sensitive_or_verbatim_text():
+    assert safe_judge_review("Missing tests and incorrect logic.") == "Missing tests and incorrect logic."
+    assert safe_judge_review("The API key is secret-token.") is None
+    assert safe_judge_review("The change is unsafe: https://example.test") is None
+    assert safe_judge_review("The implementation has missing tests.",
+                             ["The implementation has missing tests."]) is None
+    assert safe_judge_review("a " + "safe rationale " * 400) is None
+
+
 @pytest.mark.parametrize("failure_kind", ["worker", "judge"])
 def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     monkeypatch, tmp_path, failure_kind,
@@ -222,7 +231,7 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     monkeypatch.setattr(supervisor_module, "_plan_task", planner)
     monkeypatch.setattr(supervisor_module, "_verified_candidate_patch", lambda _task, value: value)
     monkeypatch.setattr(supervisor_module, "_judge_candidate", AsyncMock(return_value=(
-        0.2, "Missing tests and incorrect logic; private-source credential-token")))
+        0.2, "Missing tests and incorrect logic; unsafe handling.")))
     monkeypatch.setattr(supervisor_module, "_publish_candidate", lambda *_args: pytest.fail("Must not publish"))
     monkeypatch.setattr(supervisor_module, "_complete_via_gateway", lambda *_args, **_kw: pytest.fail("Not terminal"))
     loop = supervisor_module.SupervisorLoop()
@@ -236,7 +245,7 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     if failure_kind == "judge":
         assert feedback["review_topics"] == ["tests", "correctness", "security"]
     assert "private-source" not in row["retry_feedback"] and "credential-token" not in row["retry_feedback"]
-    events = db.execute("SELECT attempt, actor, action, outcome, reason FROM task_events ORDER BY event_id").fetchall()
+    events = db.execute("SELECT attempt, actor, action, outcome, reason, failure_details FROM task_events ORDER BY event_id").fetchall()
     assert (events[0]["attempt"], events[0]["actor"], events[0]["action"], events[0]["outcome"]) == (
         1, "supervisor", "claim", "started")
     assert any(event["attempt"] == 1 and event["actor"] == "supervisor" and event["action"] == "plan"
@@ -244,6 +253,9 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     if failure_kind == "judge":
         assert any(event["attempt"] == 1 and event["actor"] == "judge" and event["action"] == "review"
                    and event["outcome"] == "rejected" and event["reason"] == "judge-rejected" for event in events)
+        review_event = next(event for event in events if event["actor"] == "judge" and event["action"] == "review")
+        assert json.loads(review_event["failure_details"]) == {
+            "stage": "judge", "code": "review-rejected", "summary": "Missing tests and incorrect logic; unsafe handling."}
         assert any(event["outcome"] == "retrying" for event in events)
     else:
         assert any(event["attempt"] == 1 and event["actor"] == "worker" and event["action"] == "task"

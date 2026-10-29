@@ -1,6 +1,7 @@
 """Task intake, callback, retry, and status operations for the gateway."""
 
 import json
+import re
 import time
 
 EVENT_REASONS = {
@@ -22,6 +23,7 @@ EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
 FAILURE_DETAIL_CODES = {
     "validation": {"nonzero-exit"},
     "execution": {"timeout", "os-error", "json-error", "http-error", "unexpected"},
+    "judge": {"review-rejected"},
 }
 
 
@@ -31,6 +33,15 @@ def safe_failure_details(details):
     stage, code = details.get("stage"), details.get("code")
     if not isinstance(stage, str) or not isinstance(code, str) or stage not in FAILURE_DETAIL_CODES or code not in FAILURE_DETAIL_CODES[stage]:
         return None
+    if stage == "judge":
+        summary = details.get("summary")
+        if (not isinstance(summary, str) or not 1 <= len(summary) <= 500
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ,.;:!?()'-]*", summary)
+                or re.search(r"https?://|bearer|api[-_ ]?key|token|password|secret|credential|private",
+                             summary, re.IGNORECASE)
+                or re.search(r"[A-Z0-9]{32,}", summary)):
+            return None
+        return {"stage": "judge", "code": "review-rejected", "summary": summary}
     safe = {"stage": stage, "code": code}
     for key, maximum in (("exit_status", 255), ("duration_ms", 600000), ("output_bytes", 65536)):
         value = details.get(key)
@@ -47,6 +58,9 @@ def append_event(db, task_id, attempt, actor, action, outcome, *, reason=None, v
     safe_score = score if type(score) in (int, float) and 0 <= score <= 1 else None
     topics = [topic for topic in EVENT_TOPICS if topic in review_topics]
     safe_details = safe_failure_details(failure_details)
+    if (safe_details and safe_details.get("stage") == "judge"
+            and (actor != "judge" or action != "review" or outcome != "rejected" or reason != "judge-rejected")):
+        safe_details = None
     db.execute("""INSERT INTO task_events(task_id,created_at,attempt,actor,action,outcome,reason,
         validation_status,score,review_topics,failure_details) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (task_id, time.time(), max(1, min(8, int(attempt))), actor, action, outcome, safe_reason,
@@ -66,6 +80,11 @@ def operational_events(db, task_id):
             failure_details = safe_failure_details(json.loads(row["failure_details"] or "null"))
         except (ValueError, TypeError):
             failure_details = None
+        safe_details = failure_details
+        if (safe_details and safe_details.get("stage") == "judge"
+            and (row["actor"] != "judge" or row["action"] != "review" or row["outcome"] != "rejected"
+                 or row["reason"] != "judge-rejected")):
+            safe_details = None
         events.append({
             "timestamp": row["created_at"], "attempt": row["attempt"] if type(row["attempt"]) is int and 1 <= row["attempt"] <= 8 else None,
             "actor": row["actor"] if row["actor"] in ("supervisor", "worker", "judge") else "supervisor",
@@ -75,7 +94,7 @@ def operational_events(db, task_id):
             "validation_status": row["validation_status"] if row["validation_status"] in ("passed", "failed", "not-run") else None,
             "score": row["score"] if type(row["score"]) in (int, float) and 0 <= row["score"] <= 1 else None,
             "review_topics": [topic for topic in EVENT_TOPICS if isinstance(topics, list) and topic in topics],
-            "failure_details": failure_details,
+            "failure_details": safe_details,
         })
     return events
 

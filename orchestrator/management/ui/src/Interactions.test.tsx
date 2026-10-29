@@ -66,7 +66,7 @@ test('shows newest operational events first with accurate older-event context an
         ...task, status: 'failed', attempts: 2, events: [
             { timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed', reason: 'validation-failed', validation_status: 'failed', score: null, review_topics: [], failure_details: null },
             { timestamp: 1760000050, attempt: 2, actor: 'supervisor', action: 'plan', outcome: 'reused', reason: null, validation_status: null, score: null, review_topics: [], failure_details: null },
-            { timestamp: 1760000100, attempt: 2, actor: 'judge', action: 'review', outcome: 'rejected', reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['tests', 'correctness'], failure_details: null },
+            { timestamp: 1760000100, attempt: 2, actor: 'judge', action: 'review', outcome: 'rejected', reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['tests', 'correctness'], failure_details: { stage: 'judge', code: 'review-rejected', summary: 'Missing tests and incorrect logic.' } },
         ],
     }} />)
     const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
@@ -78,13 +78,24 @@ test('shows newest operational events first with accurate older-event context an
     expect(within(flow).getByText('Attempt 2 · Judge')).toBeInTheDocument()
     expect(within(flow).getByText('Saved plan reused')).toBeInTheDocument()
     expect(within(flow).getByText('Sandbox validation failed.')).toBeInTheDocument()
-    expect(within(flow).getByText('The judge scored the candidate below the acceptance threshold.')).toBeInTheDocument()
+    expect(within(flow).getByText('Missing tests and incorrect logic.')).toBeInTheDocument()
     expect(within(flow).getByText('Review topics: tests, correctness')).toBeInTheDocument()
     expect(within(flow).getByText('Recorded score: 0.40 / 1')).toBeInTheDocument()
     expect(within(flow).getByText(/No reason was recorded for this event\./)).toBeInTheDocument()
     expect(within(items[0]).getByText(/Next older event:/)).toHaveTextContent('Saved plan reused · Attempt 2 · Supervisor')
     expect(within(items[2]).getByText(/No earlier event is available in retained history/)).toBeInTheDocument()
     expect(within(flow).queryByText(/prompt|private review/i)).not.toBeInTheDocument()
+})
+
+test('keeps worker no-op reporting separate from judge rejection rationale', () => {
+    render(<Interactions task={{
+        ...task, events: [{
+            timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed',
+            reason: 'no-op-edit', validation_status: null, score: null, review_topics: [], failure_details: null,
+        }],
+    }} />)
+    expect(screen.getByText('The worker produced no effective change.')).toBeInTheDocument()
+    expect(screen.queryByText('Missing tests and incorrect logic.')).not.toBeInTheDocument()
 })
 
 test('distinguishes an empty retained timeline from an unavailable timeline', () => {

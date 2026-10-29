@@ -67,7 +67,7 @@ EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
 
 
 def record_task_event(db, task_id, attempt, actor, action, outcome, *, reason=None, validation_status=None,
-                      score=None, review_topics=()):
+                      score=None, review_topics=(), failure_details=None):
     if actor not in ("supervisor", "worker", "judge") or action not in (
             "claim", "plan", "dispatch", "candidate", "review", "publish", "task") or outcome not in (
             "started", "recorded", "reused", "dispatched", "returned", "failed", "accepted", "rejected", "retrying", "completed"):
@@ -76,18 +76,56 @@ def record_task_event(db, task_id, attempt, actor, action, outcome, *, reason=No
     safe_validation = validation_status if validation_status in ("passed", "failed", "not-run") else None
     safe_score = score if type(score) in (int, float) and 0 <= score <= 1 else None
     topics = [topic for topic in EVENT_TOPICS if topic in review_topics]
+    details = safe_failure_details(failure_details, actor, action, outcome, safe_reason)
     db.execute("BEGIN IMMEDIATE")
     try:
         db.execute("""INSERT INTO task_events(task_id,created_at,attempt,actor,action,outcome,reason,
-            validation_status,score,review_topics) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            validation_status,score,review_topics,failure_details) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (task_id, time.time(), max(1, min(8, int(attempt))), actor, action, outcome, safe_reason,
-             safe_validation, safe_score, json.dumps(topics)))
+             safe_validation, safe_score, json.dumps(topics), json.dumps(details) if details else None))
         db.execute("""DELETE FROM task_events WHERE task_id=? AND event_id NOT IN
             (SELECT event_id FROM task_events WHERE task_id=? ORDER BY event_id DESC LIMIT 128)""", (task_id, task_id))
         db.commit()
     except Exception:
         db.rollback()
         raise
+
+
+def safe_failure_details(details, actor, action, outcome, reason):
+    if (actor != "judge" or action != "review" or outcome != "rejected" or reason != "judge-rejected"
+            or not isinstance(details, dict) or details.get("stage") != "judge"
+            or details.get("code") != "review-rejected"):
+        return None
+    summary = details.get("summary")
+    if (not isinstance(summary, str) or not 1 <= len(summary) <= 500
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ,.;:!?()'-]*", summary)
+            or re.search(r"https?://|bearer|api[-_ ]?key|token|password|secret|credential|private",
+                         summary, re.IGNORECASE)
+            or re.search(r"[A-Z0-9]{32,}", summary)):
+        return None
+    return {"stage": "judge", "code": "review-rejected", "summary": summary}
+
+
+def safe_judge_review(review, source_texts=()):
+    """Keep a concise rationale only when it is plain language, not an excerpt."""
+    if not isinstance(review, str):
+        return None
+    text = " ".join(review.split())
+    if not text or len(text) > 4000:
+        return None
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ,.;:!?()'-]*", text)
+            or re.search(r"https?://|bearer|api[-_ ]?key|token|password|secret|credential|private",
+                         text, re.IGNORECASE)
+            or re.search(r"[A-Z0-9]{32,}", text)):
+        return None
+    words = re.findall(r"[A-Za-z0-9_]{3,}", text.lower())
+    review_phrases = {tuple(words[index:index + 4]) for index in range(max(0, len(words) - 3))}
+    for source in source_texts:
+        source_words = re.findall(r"[A-Za-z0-9_]{3,}", str(source).lower())
+        source_phrases = {tuple(source_words[index:index + 4]) for index in range(max(0, len(source_words) - 3))}
+        if review_phrases & source_phrases:
+            return None
+    return text[:500]
 
 
 def review_topics(review):

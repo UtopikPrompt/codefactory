@@ -10,6 +10,7 @@ from task_runtime import (
     record_task_event,
     requeue_failed_task,
     review_topics,
+    safe_judge_review,
 )
 
 
@@ -115,9 +116,15 @@ class SupervisorLoop:
             if not 0 <= threshold <= 1:
                 raise RuntimeError("acceptance-threshold-invalid")
             accepted = score >= threshold
+            summary = safe_judge_review(review, (
+                task["payload"], candidate.get("patch", ""),
+                *(edit.get("content", "") for edit in candidate.get("edits", []) if isinstance(edit, dict)),
+            )) if not accepted else None
             record_task_event(db, task_id, task["attempts"], "judge", "review",
                               "accepted" if accepted else "rejected", reason=None if accepted else "judge-rejected",
-                              score=score, review_topics=review_topics(review))
+                              score=score, review_topics=review_topics(review),
+                              failure_details={"stage": "judge", "code": "review-rejected", "summary": summary}
+                              if summary else None)
             if score < threshold:
                 feedback = failure_feedback("judge", "judge-rejected", task["attempts"], review)
                 if task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS:

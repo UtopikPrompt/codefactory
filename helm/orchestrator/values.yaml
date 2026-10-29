@@ -134,6 +134,7 @@ agentCatalog:
 management:
   enabled: false
   image: "ghcr.io/utopikprompt/codefactory-management:latest"
+  imageDigest: ""
   imagePullPolicy: IfNotPresent
   github:
     clientId: ""

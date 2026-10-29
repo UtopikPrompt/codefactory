@@ -32,6 +32,7 @@ export interface Task {
 export type FailureDetails = (
     | { stage: 'validation'; code: 'nonzero-exit' }
     | { stage: 'execution'; code: 'timeout' | 'os-error' | 'json-error' | 'http-error' | 'unexpected' }
+    | { stage: 'judge'; code: 'review-rejected'; summary: string }
 ) & {
     exit_status?: number
     duration_ms?: number

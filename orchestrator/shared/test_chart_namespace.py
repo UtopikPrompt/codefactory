@@ -326,6 +326,30 @@ def test_empty_image_pull_secrets_renders(tmp_path):
     assert "imagePullSecrets:\n        []" in result.stdout
 
 
+def test_management_image_digest_changes_pod_template():
+    base = ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator",
+            "--values", str(CHART / "example.values.yaml"),
+            "--set", "management.enabled=true"]
+
+    def rendered_management_image(digest):
+        result = subprocess.run(
+            [*base, "--set", f"management.imageDigest={digest}"],
+            check=True, capture_output=True, text=True,
+        )
+        resources = [resource for resource in yaml.safe_load_all(result.stdout) if resource]
+        deployment = next(resource for resource in resources
+                          if resource["kind"] == "Deployment"
+                          and resource["metadata"]["name"] == "orchestrator-management")
+        return deployment["spec"]["template"]["spec"]["containers"][0]["image"]
+
+    first_digest = "sha256:" + "a" * 64
+    second_digest = "sha256:" + "b" * 64
+    first_image = rendered_management_image(first_digest)
+    assert first_image == rendered_management_image(first_digest)
+    assert first_image == f"ghcr.io/utopikprompt/codefactory-management:latest@{first_digest}"
+    assert first_image != rendered_management_image(second_digest)
+
+
 def test_empty_github_auth_renders_and_invalid_values_fail(tmp_path):
     values = yaml.safe_load((CHART / "example.values.yaml").read_text())
     values["githubAuth"].update(appId="", audience="")

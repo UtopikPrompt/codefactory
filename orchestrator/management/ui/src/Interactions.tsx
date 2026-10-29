@@ -65,7 +65,9 @@ function eventDescription(event: OperationalEvent) {
         : 'A bounded plan was saved. Plan text is withheld.'
     if (event.action === 'dispatch') return 'The supervisor created a worker job for this attempt.'
     if (event.action === 'candidate') return `Coder worker result received. Sandbox validation: ${event.validation_status || 'not recorded'}.`
-    if (event.action === 'review') return 'The judge recorded a decision. Full review text is withheld.'
+    if (event.action === 'review') return event.outcome === 'rejected'
+        ? 'The judge rejected the candidate. A bounded rationale may be shown.'
+        : 'The judge accepted the candidate. Review text is withheld.'
     if (event.action === 'publish') return 'The supervisor recorded publication for human review.'
     if (event.action === 'task' && event.outcome === 'retrying') return 'The supervisor recorded that this task will be retried.'
     if (event.action === 'task' && event.outcome === 'failed') return 'The supervisor recorded a terminal task failure.'
@@ -99,7 +101,9 @@ function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefin
                 <p>{eventDescription(event)}</p>
                 {event.score !== null && <p>Recorded score: {event.score.toFixed(2)} / 1</p>}
                 {event.review_topics.length > 0 && <p>Review topics: {event.review_topics.join(', ')}</p>}
-                <p className="timeline-reason"><strong>Why:</strong> {event.reason ? eventReasons[event.reason] || 'A safe operational reason was recorded.' : 'No reason was recorded for this event.'}</p>
+                <p className="timeline-reason"><strong>Why:</strong> {event.reason === 'judge-rejected' && event.failure_details?.stage === 'judge'
+                    ? event.failure_details.summary
+                    : event.reason ? eventReasons[event.reason] || 'A safe operational reason was recorded.' : 'No reason was recorded for this event.'}</p>
                 <p className="timeline-next"><strong>Next older event:</strong> {nextEvent
                     ? `${eventTitle(nextEvent)} · Attempt ${nextEvent.attempt} · ${eventActor(nextEvent)}`
                     : 'No earlier event is available in retained history.'}</p>

@@ -453,6 +453,16 @@ def test_task_events_expose_only_bounded_operational_fields(boundary):
         }, {
             "timestamp": 1760000003, "attempt": 9, "actor": "worker", "action": "candidate",
             "outcome": "returned", "reason": "private payload",
+        }, {
+            "timestamp": 1760000004, "attempt": 5, "actor": "judge", "action": "review",
+            "outcome": "rejected", "reason": "judge-rejected",
+            "failure_details": {"stage": "judge", "code": "review-rejected",
+                                "summary": "Missing tests and incorrect logic."},
+        }, {
+            "timestamp": 1760000005, "attempt": 5, "actor": "worker", "action": "candidate",
+            "outcome": "failed", "reason": "no-op-edit",
+            "failure_details": {"stage": "judge", "code": "review-rejected",
+                                "summary": "Worker copied private source."},
         }],
     })
     response = client.get("/management/api/tasks/task-1")
@@ -473,8 +483,18 @@ def test_task_events_expose_only_bounded_operational_fields(boundary):
         "outcome": "recorded", "reason": None, "validation_status": None,
         "score": None, "review_topics": [],
         "failure_details": {"stage": "validation", "code": "nonzero-exit"},
+    }, {
+        "timestamp": 1760000004, "attempt": 5, "actor": "judge", "action": "review",
+        "outcome": "rejected", "reason": "judge-rejected", "validation_status": None,
+        "score": None, "review_topics": [],
+        "failure_details": {"stage": "judge", "code": "review-rejected",
+                            "summary": "Missing tests and incorrect logic."},
+    }, {
+        "timestamp": 1760000005, "attempt": 5, "actor": "worker", "action": "candidate",
+        "outcome": "failed", "reason": "no-op-edit", "validation_status": None,
+        "score": None, "review_topics": [], "failure_details": None,
     }]
-    for forbidden in ("secret", "token", "private", "raw validation output"):
+    for forbidden in ("secret", "token", "private", "raw validation output", "Worker copied"):
         assert forbidden not in response.text
 
 

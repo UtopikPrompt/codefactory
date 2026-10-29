@@ -266,6 +266,10 @@
                 "image": {
                     "type": "string"
                 },
+                "imageDigest": {
+                    "type": "string",
+                    "pattern": "^(sha256:[a-f0-9]{64})?$"
+                },
                 "imagePullPolicy": {
                     "enum": [
                         "Always",

@@ -265,6 +265,7 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
         allowed_codes = {
             "validation": {"nonzero-exit"},
             "execution": {"timeout", "os-error", "json-error", "http-error", "unexpected"},
+            "judge": {"review-rejected"},
         }
         if not isinstance(details, dict):
             return None
@@ -272,6 +273,15 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
         if (not isinstance(stage, str) or not isinstance(code, str)
                 or stage not in allowed_codes or code not in allowed_codes[stage]):
             return None
+        if stage == "judge":
+            summary = details.get("summary")
+            if (not isinstance(summary, str) or not 1 <= len(summary) <= 500
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ,.;:!?()'-]*", summary)
+                    or re.search(r"https?://|bearer|api[-_ ]?key|token|password|secret|credential|private",
+                                 summary, re.IGNORECASE)
+                    or re.search(r"[A-Z0-9]{32,}", summary)):
+                return None
+            return {"stage": "judge", "code": "review-rejected", "summary": summary}
         safe = {"stage": stage, "code": code}
         for key, maximum in (("exit_status", 255), ("duration_ms", 600000), ("output_bytes", 65536)):
             value = details.get(key)
@@ -309,6 +319,14 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
             if (type(timestamp) not in (int, float) or not 0 < timestamp < 100000000000
                     or type(attempt) is not int or not 1 <= attempt <= 8):
                 continue
+            actor = event.get("actor")
+            action = event.get("action")
+            outcome = event.get("outcome")
+            reason = event.get("reason")
+            details = safe_failure_details(event.get("failure_details"))
+            if (details and details.get("stage") == "judge"
+                    and (actor != "judge" or action != "review" or outcome != "rejected" or reason != "judge-rejected")):
+                details = None
             safe_events.append({
                 "timestamp": timestamp,
                 "attempt": attempt,
@@ -321,7 +339,7 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
                 "score": event.get("score") if type(event.get("score")) in (int, float) and 0 <= event["score"] <= 1 else None,
                 "review_topics": [topic for topic in topics if isinstance(event.get("review_topics"), list)
                                   and topic in event["review_topics"]],
-                "failure_details": safe_failure_details(event.get("failure_details")),
+                "failure_details": details,
             })
         return safe_events
 

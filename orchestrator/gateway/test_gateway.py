@@ -126,7 +126,8 @@ def test_task_detail_exposes_only_safe_coordination_records(task_gateway):
         append_event(db, task_id, 1, "worker", "candidate", "failed", reason="validation-failed",
                      validation_status="failed")
         append_event(db, task_id, 2, "judge", "review", "rejected", reason="judge-rejected", score=0.4,
-                     review_topics=["tests", "private"])
+                     review_topics=["tests", "private"], failure_details={
+                         "stage": "judge", "code": "review-rejected", "summary": "Missing tests and incorrect logic."})
         append_event(db, task_id, 2, "judge", "review", "rejected", reason="private review text",
                      review_topics=["private"])
     finally:
@@ -142,6 +143,8 @@ def test_task_detail_exposes_only_safe_coordination_records(task_gateway):
                 (2, "judge", "review", "rejected"),
             ]
     assert detail["events"][1]["review_topics"] == ["tests"]
+    assert detail["events"][1]["failure_details"] == {
+        "stage": "judge", "code": "review-rejected", "summary": "Missing tests and incorrect logic."}
     assert detail["events"][2]["reason"] is None
     assert "private plan" not in json.dumps(detail) and "secret review" not in json.dumps(detail)
     assert "private review text" not in json.dumps(detail)
