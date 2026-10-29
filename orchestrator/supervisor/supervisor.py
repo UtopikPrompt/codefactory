@@ -66,8 +66,8 @@ def release_task_claim(db, task_id: str, owner: str, requeue: bool = True):
     return _release_task_claim(db, task_id, owner, requeue)
 
 
-def _load_pinned_catalog(task):
-    return _runtime_load_pinned_catalog(task, _k8s_request)
+def _load_pinned_catalog(task, db=None):
+    return _runtime_load_pinned_catalog(task, _k8s_request, db)
 
 
 def _k8s_request(method: str, path: str, body: dict | None = None):

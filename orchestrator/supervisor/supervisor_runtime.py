@@ -71,7 +71,7 @@ class SupervisorLoop:
         try:
             if json.loads(task["payload"]).get("repository_auth") != "github-app":
                 raise RuntimeError("task-authentication-unsupported")
-            catalog, runtime = supervisor._load_pinned_catalog(task)
+            catalog, runtime = supervisor._load_pinned_catalog(task, db)
             if task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS and not task["result"]:
                 record_task_event(db, task_id, task["attempts"], "supervisor", "task", "failed",
                                   reason="max-total-attempts-exhausted")

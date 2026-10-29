@@ -111,6 +111,8 @@ def test_admin_login_without_oidc(boundary, tmp_path):
             del settings[key]
     (tmp_path / "index.html").write_text("<html>Management</html>")
     settings["MANAGEMENT_STATIC_DIR"] = str(tmp_path)
+    upstream.return_value = httpx.Response(200, json={"version": "1", "hash": "a" * 64,
+        "models": [], "prompts": {"worker": "", "planner": "", "judge": ""}, "agents": []})
     client = TestClient(create_app(settings, httpx.MockTransport(upstream)))
     for path in ("/", "/management/api/session", "/management/api/tasks"):
         response = client.get(path)
@@ -124,6 +126,7 @@ def test_admin_login_without_oidc(boundary, tmp_path):
     assert "admin-test-password-only" not in client.get("/management/api/session").text
     assert client.post("/management/api/tasks", json={}).status_code == 403
     connect_github(client)
+    upstream.return_value = httpx.Response(202, json={"task_id": "task-1", "status": "queued"})
     response = client.post("/management/api/tasks", json={"repo": "org/repo", "issue_number": 7},
                            headers={"Origin": settings["MANAGEMENT_PUBLIC_ORIGIN"], "X-Management-Request": "1"})
     assert response.status_code == 202
@@ -186,7 +189,8 @@ def test_admin_operations_without_repository_access(boundary, tmp_path, reposito
     for path in ("/", "/management/api/session", "/management/api/config"):
         assert client.get(path).status_code == 200
     assert client.get("/management/api/repositories").json() == {"repositories": []}
-    upstream.assert_not_called()
+    upstream.assert_called_once()
+    assert upstream.call_args.args[0].url.path == "/api/v1/config"
     upstream.return_value = httpx.Response(200, json={"tasks": [{"task_id": "task-1", "patch": "private"}],
                                                     "total": 1, "limit": 25, "offset": 0})
     assert client.get("/management/api/tasks").json()["tasks"] == [{"task_id": "task-1"}]
@@ -386,6 +390,12 @@ def test_task_and_config_summaries_are_allowlisted(boundary):
     upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "repo": "org/repo",
                                                        "result": {"pr_url": "https://evil.example"}})
     assert client.get("/management/api/tasks/task-1").json()["pr_url"] is None
+    upstream.return_value = httpx.Response(200, json={"version": "1", "hash": "a" * 64,
+        "models": [{"role": "coder", "model": "configured-coder", "availability": "unknown",
+                    "native_download": True},
+                   {"role": "judge", "model": "configured-judge", "availability": "unknown",
+                    "native_download": False}],
+        "prompts": {"worker": "", "planner": "", "judge": ""}, "agents": []})
     config = client.get("/management/api/config")
     assert config.status_code == 200
     assert config.json()["models"][0]["model"] == "configured-coder"
@@ -407,6 +417,31 @@ def test_listing_and_upstream_failures(boundary):
     assert response.status_code == 502 and "secret" not in response.text
     upstream.return_value = httpx.Response(302, headers={"Location": "https://attacker.example"})
     assert client.get("/management/api/tasks/task-1").status_code == 502
+
+
+def test_config_changes_require_same_origin_and_forward_versioned_drafts(boundary):
+    client, upstream, _, _ = boundary
+    draft = {"expected_hash": "a" * 64, "models": {"coder": "new/coder", "judge": "new/judge"},
+             "prompts": {"worker": "Prefer concise edits.", "planner": "", "judge": ""}}
+    upstream.return_value = httpx.Response(200, json={"valid": True})
+    validated = client.post("/management/api/config/validate", json=draft)
+    assert validated.status_code == 200 and validated.json() == {"valid": True}
+    request = upstream.call_args.args[0]
+    assert request.url.path == "/api/v1/config/validate"
+    assert json.loads(request.content) == draft
+
+    client.headers.pop("Origin")
+    calls = upstream.call_count
+    assert client.post("/management/api/config/apply", json=draft).status_code == 403
+    assert upstream.call_count == calls
+    client.headers["Origin"] = "https://factory.example"
+
+    upstream.return_value = httpx.Response(409, json={"error": "config-version-conflict"})
+    conflict = client.post("/management/api/config/apply", json=draft)
+    assert conflict.status_code == 409
+    apply_request = upstream.call_args.args[0]
+    assert apply_request.url.path == "/api/v1/config/apply"
+    assert json.loads(apply_request.content) == {"draft": draft, "actor": "operator"}
 
 
 def test_coordination_summary_allowlists_feedback_and_review_score(boundary):
@@ -526,6 +561,8 @@ def test_no_configuration_or_deployment_mutations(boundary):
     client, upstream, _, _ = boundary
     for path in ("/management/api/config", "/management/api/deploy", "/management/api/tasks/task-1/retry"):
         assert client.post(path, json={}).status_code == 405
+    assert client.post("/management/api/config/validate", json={}).status_code == 400
+    assert client.post("/management/api/config/apply", json={}).status_code == 400
     upstream.assert_not_called()
 
 
@@ -542,6 +579,17 @@ def test_adapter_to_real_gateway_contract(boundary, monkeypatch, tmp_path, auth_
     monkeypatch.setattr(gateway, "_github_app", lambda: app_auth)
     monkeypatch.setenv("TASK_DB_PATH", str(tmp_path / "tasks.sqlite3"))
     monkeypatch.setenv("GATEWAY_TRANSPORT_MODE", "local-http")
+    chart_files = Path(__file__).resolve().parents[2] / "helm/orchestrator/files"
+    catalog = (chart_files / "agent-catalog.yaml").read_text()
+    catalog_schema = (chart_files / "agent-catalog.schema.json").read_text()
+    runtime = json.dumps({"version": "1", "catalog": catalog, "coder_model": "coder-model",
+                          "judge_model": "judge-model", "coder_native_download": False,
+                          "judge_native_download": False, "prompts": {"worker": "", "planner": "", "judge": ""}})
+    config_hash = gateway.hashlib.sha256((catalog + catalog_schema + runtime).encode()).hexdigest()
+    for name, value in (("AGENT_CONFIG_HASH", config_hash), ("AGENT_CONFIG_VERSION", "1"),
+                        ("AGENT_CATALOG_YAML", catalog), ("AGENT_CATALOG_SCHEMA_JSON", catalog_schema),
+                        ("AGENT_RUNTIME_CONFIG_JSON", runtime)):
+        monkeypatch.setenv(name, value)
     def github(method, path, *, token):
         assert method == "GET" and token == "repository-test-secret"
         if path == "/repos/org/repo":
@@ -662,7 +710,7 @@ def test_management_helm_opt_in_and_snapshot(tmp_path):
     snapshot = next(document for document in documents if document["kind"] == "ConfigMap" and "runtime-config.json" in document.get("data", {}))
     runtime = json.loads(snapshot["data"]["runtime-config.json"])
     assert runtime["coder_model"] and runtime["judge_model"]
-    assert pod["volumes"][0]["configMap"]["name"] == snapshot["metadata"]["name"]
+    assert not pod.get("volumes")
 
 
 @pytest.mark.parametrize("command", ["template", "lint"])

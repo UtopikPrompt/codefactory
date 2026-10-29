@@ -84,14 +84,6 @@ spec:
             - name: MANAGEMENT_ALLOWED_SUBJECTS
               value: {{ join "," .Values.management.oidc.allowedSubjects | quote }}
             {{- end }}
-            - name: MANAGEMENT_RUNTIME_CONFIG_FILE
-              value: /etc/runtime/runtime-config.json
-            - name: MANAGEMENT_CONFIG_HASH
-              value: {{ include "orchestrator.agentCatalogHash" . | quote }}
-          volumeMounts:
-            - name: runtime
-              mountPath: /etc/runtime
-              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -107,13 +99,6 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
-      volumes:
-        - name: runtime
-          configMap:
-            name: {{ .Chart.Name }}-agent-catalog-{{ include "orchestrator.agentCatalogHash" . | trunc 12 }}
-            items:
-              - key: runtime-config.json
-                path: runtime-config.json
 ---
 apiVersion: v1
 kind: Service

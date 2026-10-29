@@ -12,6 +12,7 @@ let detailStatus = 200
 let status = 200
 let repositories: string[]
 let connected = true
+let configResponse: unknown
 
 beforeEach(() => {
     window.location.hash = '/tasks'
@@ -21,12 +22,21 @@ beforeEach(() => {
             job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false
         }
     }
+    configResponse = {
+        source: 'Durable task config', version: '1', hash: 'a'.repeat(64),
+        models: [
+            { role: 'coder', model: 'verified-model', native_download: true, availability: 'unknown' },
+            { role: 'judge', model: 'review-model', native_download: false, availability: 'unknown' },
+        ], prompts: { worker: '', planner: '', judge: '' }, agents: [],
+    }
     vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
         calls.push([url, options])
         const body = url.endsWith('/github/session') ? { connected, configured: true }
             : url.endsWith('/session') ? { subject: 'operator' } : url.endsWith('/repositories') ? { repositories }
-                : options?.method === 'POST' ? task : url.includes('/tasks/task-1') ? taskDetailResponse
-                    : url.includes('/config') ? { version: '1', hash: 'abc', models: [{ role: 'coder', model: 'verified-model', native_download: true, availability: 'unknown' }], agents: [] } : taskResponse
+                : url.endsWith('/config/validate') ? { valid: true }
+                    : url.endsWith('/config/apply') ? configResponse
+                        : url.includes('/config') ? configResponse
+                            : options?.method === 'POST' ? task : url.includes('/tasks/task-1') ? taskDetailResponse : taskResponse
         return new Response(JSON.stringify(body), { status: url.includes('/tasks/task-1') ? detailStatus : status, headers: { 'Content-Type': 'application/json' } })
     }))
 })
@@ -148,8 +158,37 @@ test('has honest empty and read-only model states', async () => {
     await user.click(screen.getByRole('link', { name: 'Models' }))
     expect(await screen.findByText('verified-model')).toBeInTheDocument()
     expect(screen.getByText('unknown')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'coder model' })).toHaveValue('verified-model')
+    expect(screen.getByRole('textbox', { name: 'Worker guidance' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Apply for future tasks' })).toBeDisabled()
+    await user.click(screen.getByRole('link', { name: 'Agents' }))
     expect(screen.getByText('Read only')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /save|deploy/i })).not.toBeInTheDocument()
+})
+
+test('validates a model and prompt draft before applying it to future tasks', async () => {
+    const user = userEvent.setup()
+    mount()
+    await user.click(await screen.findByRole('link', { name: 'Models' }))
+    const model = await screen.findByRole('textbox', { name: 'coder model' })
+    await user.clear(model)
+    await user.type(model, 'new/coder-model')
+    const prompt = screen.getByRole('textbox', { name: 'Worker guidance' })
+    await user.type(prompt, 'Prefer concise changes.')
+    await user.click(screen.getByRole('button', { name: 'Validate draft' }))
+    await screen.findByText('Draft validated against the active version.')
+    const validationCall = calls.find(([url]) => url.endsWith('/config/validate'))
+    expect(JSON.parse(validationCall?.[1]?.body as string)).toMatchObject({
+        expected_hash: 'a'.repeat(64), models: { coder: 'new/coder-model', judge: 'review-model' },
+        prompts: { worker: 'Prefer concise changes.', planner: '', judge: '' },
+    })
+    await user.click(screen.getByRole('button', { name: 'Apply for future tasks' }))
+    await waitFor(() => expect(calls.some(([url]) => url.endsWith('/config/apply'))).toBe(true))
+    const applyCall = calls.find(([url]) => url.endsWith('/config/apply'))
+    expect(JSON.parse(applyCall?.[1]?.body as string)).toMatchObject({
+        expected_hash: 'a'.repeat(64), models: { coder: 'new/coder-model' },
+        prompts: { worker: 'Prefer concise changes.' },
+    })
+    expect(applyCall?.[1]?.headers).toHaveProperty('X-Management-Request', '1')
 })
 
 test('places management route links in a top menu with an active page', async () => {

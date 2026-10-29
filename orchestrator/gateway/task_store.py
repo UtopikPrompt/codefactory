@@ -35,6 +35,12 @@ def connect_task_database(path, init_lock):
             attempt INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL,
             reason TEXT, validation_status TEXT, score REAL, review_topics TEXT NOT NULL DEFAULT '[]',
             failure_details TEXT)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS agent_config_versions (
+            config_hash TEXT PRIMARY KEY, config_version TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL UNIQUE,
+            catalog TEXT NOT NULL, catalog_schema TEXT NOT NULL, runtime_config TEXT NOT NULL,
+            created_at REAL NOT NULL, created_by TEXT NOT NULL)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS agent_config_state (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), active_config_hash TEXT NOT NULL)""")
         event_columns = {row[1] for row in db.execute("PRAGMA table_info(task_events)")}
         if "failure_details" not in event_columns:
             db.execute("ALTER TABLE task_events ADD COLUMN failure_details TEXT")

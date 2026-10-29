@@ -19,6 +19,7 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+import agent_config
 from github_auth import (
     AppUnavailable,
     AuthenticationError,
@@ -138,7 +139,13 @@ def _identity(payload):
 
 def _task_db():
     path = os.environ.get("TASK_DB_PATH", "/data/tasks/tasks.sqlite3")
-    return connect_task_database(path, DB_INIT_LOCK)
+    db = connect_task_database(path, DB_INIT_LOCK)
+    try:
+        agent_config.initialize(db, os.environ)
+        return db
+    except Exception:
+        db.close()
+        raise
 
 
 def _github(method, path, body=None, *, token):
@@ -362,6 +369,19 @@ class Handler(BaseHTTPRequestHandler):
             self._task_api().list_tasks()
             return
 
+        if urlsplit(path).path == "/api/v1/config":
+            if not self._authorized():
+                self._json(401, {"error": "unauthorized"})
+                return
+            db = _task_db()
+            try:
+                self._json(200, agent_config.active(db))
+            except agent_config.ConfigUnavailable:
+                self._json(503, {"error": "agent-config-unavailable"})
+            finally:
+                db.close()
+            return
+
         if path.startswith("/api/v1/tasks/"):
             if not self._authorized():
                 self._json(401, {"error": "unauthorized"})
@@ -406,6 +426,22 @@ class Handler(BaseHTTPRequestHandler):
                 raise TypeError("invalid-payload")
             if path.endswith("/credentials") and (task_callback or supervisor_endpoint):
                 self._task_api().credentials(payload, supervisor=supervisor_endpoint)
+            elif path == "/api/v1/config/validate":
+                db = _task_db()
+                try:
+                    self._json(200, agent_config.validate_active_draft(db, payload))
+                finally:
+                    db.close()
+            elif path == "/api/v1/config/apply":
+                if (set(payload) != {"draft", "actor"} or not isinstance(payload["draft"], dict)
+                        or not isinstance(payload["actor"], str)
+                        or not re.fullmatch(r"[A-Za-z0-9._:@/-]{1,128}", payload["actor"])):
+                    raise ValueError("invalid-config-apply")
+                db = _task_db()
+                try:
+                    self._json(200, agent_config.apply(db, payload["draft"], payload["actor"]))
+                finally:
+                    db.close()
             elif urlsplit(self.path).path == "/api/v1/tasks/spawn":
                 self._spawn(payload)
             elif urlsplit(self.path).path.startswith("/api/v1/supervisor/tasks/"):
@@ -424,6 +460,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(403, {"error": "repository-not-authorized"})
         except AppUnavailable:
             self._json(503, {"error": "github-app-unavailable"})
+        except agent_config.ConfigConflict:
+            self._json(409, {"error": "config-version-conflict"})
+        except agent_config.ConfigUnavailable:
+            self._json(503, {"error": "agent-config-unavailable"})
         except PermissionError:
             self._json(403, {"error": "repository-mismatch"})
         except CredentialError as error:

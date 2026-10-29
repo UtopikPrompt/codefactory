@@ -11,7 +11,6 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 import jwt
-import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic
@@ -108,6 +107,23 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
     def same_origin(request):
         if request.headers.get("origin") != origin or request.headers.get("x-management-request") != "1":
             raise HTTPException(403, "same-origin-request-required")
+
+    async def config_draft(request):
+        same_origin(request)
+        if request.headers.get("content-type", "").split(";")[0] != "application/json":
+            raise HTTPException(415, "json-required")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 8192:
+                raise HTTPException(413, "request-too-large")
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "invalid-config-draft") from None
+        if not isinstance(payload, dict) or set(payload) != {"expected_hash", "models", "prompts"}:
+            raise HTTPException(400, "invalid-config-draft")
+        return payload
 
     def github_token(request, subject):
         now = time.time()
@@ -408,20 +424,21 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
         return JSONResponse(task_summary(data), status_code=status)
 
     @app.get("/management/api/config", dependencies=[Depends(identity)])
-    def config():
-        try:
-            runtime = json.loads(Path(settings["MANAGEMENT_RUNTIME_CONFIG_FILE"]).read_text())
-            catalog = yaml.safe_load(runtime["catalog"])
-            roles = catalog["roles"]
-            agents = [{"id": role["id"], "role": name, "endpoint_alias": role["endpoint_alias"],
-                       "max_files": role["max_files"], "tools": role["tools"], "availability": "unknown"}
-                      for name, role in roles.items() if name in ("coder", "judge")]
-            models = [{"role": role, "model": runtime[role + "_model"], "availability": "unknown",
-                       "native_download": runtime[role + "_native_download"]} for role in ("coder", "judge")]
-            return {"source": "Git/Helm", "version": runtime["version"],
-                    "hash": settings.get("MANAGEMENT_CONFIG_HASH"), "agents": agents, "models": models}
-        except (KeyError, OSError, ValueError, TypeError, yaml.YAMLError):
-            raise HTTPException(503, "configuration-summary-unavailable") from None
+    async def config():
+        _, active = await gateway("GET", "/api/v1/config")
+        return {**active, "source": "Durable task config"}
+
+    @app.post("/management/api/config/validate")
+    async def validate_config(request: Request, subject: Annotated[str, Depends(identity)]):
+        draft = await config_draft(request)
+        _, result = await gateway("POST", "/api/v1/config/validate", payload=draft)
+        return result
+
+    @app.post("/management/api/config/apply")
+    async def apply_config(request: Request, subject: Annotated[str, Depends(identity)]):
+        draft = await config_draft(request)
+        _, result = await gateway("POST", "/api/v1/config/apply", payload={"draft": draft, "actor": subject})
+        return result
 
     @app.get("/{path:path}", dependencies=[Depends(identity)])
     def frontend(path: str):

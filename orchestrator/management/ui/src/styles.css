@@ -843,6 +843,65 @@ dd svg {
     margin-left: auto;
 }
 
+.config-editor {
+    display: grid;
+    gap: 20px;
+}
+
+.model-input {
+    width: min(100%, 420px);
+    min-width: 180px;
+}
+
+.prompt-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.prompt-field {
+    display: grid;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.prompt-field textarea {
+    width: 100%;
+    min-height: 120px;
+    resize: vertical;
+    font: 13px/1.5 'IBM Plex Mono', monospace;
+}
+
+.config-boundary,
+.config-valid {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.config-valid {
+    color: var(--success, #26734d);
+}
+
+.config-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+}
+
+@media (max-width: 760px) {
+    .prompt-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .config-actions {
+        flex-wrap: wrap;
+    }
+}
+
 .identity-cell {
     display: flex;
     align-items: center;

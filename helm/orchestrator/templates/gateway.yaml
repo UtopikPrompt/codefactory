@@ -88,6 +88,12 @@ spec:
               value: {{ .Values.agentCatalog.version | default "1" | quote }}
             - name: AGENT_CONFIG_HASH
               value: {{ include "orchestrator.agentCatalogHash" . | quote }}
+            - name: AGENT_CATALOG_YAML
+              value: {{ .Files.Get "files/agent-catalog.yaml" | quote }}
+            - name: AGENT_CATALOG_SCHEMA_JSON
+              value: {{ .Files.Get "files/agent-catalog.schema.json" | quote }}
+            - name: AGENT_RUNTIME_CONFIG_JSON
+              value: {{ include "orchestrator.agentRuntimeConfigJson" . | quote }}
           resources:
             requests:
               cpu: {{ .Values.gateway.config.cpuRequest | default "100m" }}

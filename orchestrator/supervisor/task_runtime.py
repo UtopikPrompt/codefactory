@@ -41,6 +41,12 @@ def task_database(path: str | None = None):
         attempt INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL,
         reason TEXT, validation_status TEXT, score REAL, review_topics TEXT NOT NULL DEFAULT '[]',
         failure_details TEXT)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS agent_config_versions (
+        config_hash TEXT PRIMARY KEY, config_version TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL UNIQUE,
+        catalog TEXT NOT NULL, catalog_schema TEXT NOT NULL, runtime_config TEXT NOT NULL,
+        created_at REAL NOT NULL, created_by TEXT NOT NULL)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS agent_config_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1), active_config_hash TEXT NOT NULL)""")
     event_columns = {row[1] for row in db.execute("PRAGMA table_info(task_events)")}
     if "failure_details" not in event_columns:
         db.execute("ALTER TABLE task_events ADD COLUMN failure_details TEXT")
@@ -199,14 +205,20 @@ def release_task_claim(db, task_id: str, owner: str, requeue: bool = True):
                (status, task_id, owner))
 
 
-def load_pinned_catalog(task, k8s_request):
-    namespace = os.environ.get("POD_NAMESPACE", "orchestrator")
-    prefix = os.environ.get("AGENT_CATALOG_NAME_PREFIX", "orchestrator-agent-catalog-")
-    name = prefix + (task["config_hash"] or "")[:12]
-    config = k8s_request("GET", f"/api/v1/namespaces/{namespace}/configmaps/{name}")
-    content = config.get("data", {}).get("agent-roles.yaml", "")
-    schema_content = config.get("data", {}).get("agent-roles.schema.json", "")
-    runtime_content = config.get("data", {}).get("runtime-config.json", "")
+def load_pinned_catalog(task, k8s_request, db=None):
+    pinned = db.execute("SELECT * FROM agent_config_versions WHERE config_hash=?", (task["config_hash"],)).fetchone() if db else None
+    if pinned:
+        content = pinned["catalog"]
+        schema_content = pinned["catalog_schema"]
+        runtime_content = pinned["runtime_config"]
+    else:
+        namespace = os.environ.get("POD_NAMESPACE", "orchestrator")
+        prefix = os.environ.get("AGENT_CATALOG_NAME_PREFIX", "orchestrator-agent-catalog-")
+        name = prefix + (task["config_hash"] or "")[:12]
+        config = k8s_request("GET", f"/api/v1/namespaces/{namespace}/configmaps/{name}")
+        content = config.get("data", {}).get("agent-roles.yaml", "")
+        schema_content = config.get("data", {}).get("agent-roles.schema.json", "")
+        runtime_content = config.get("data", {}).get("runtime-config.json", "")
     if (not content or not schema_content
                 or not runtime_content
                 or hashlib.sha256((content + schema_content + runtime_content).encode()).hexdigest() != task["config_hash"]):
@@ -234,6 +246,7 @@ def load_pinned_catalog(task, k8s_request):
                 "threshold", "max_total_attempts", "allowed_base_branches", "reviewers",
                 "repo_policies", "worker_parallelism"}
     if (not isinstance(runtime, dict) or not required <= runtime.keys()
+            or runtime.get("version") != task["config_version"] or runtime.get("catalog") != content
             or runtime.get("max_total_attempts") != MAX_TOTAL_ATTEMPTS
             or type(runtime.get("threshold")) not in (float, int)
             or not 0 <= runtime["threshold"] <= 1
@@ -243,6 +256,11 @@ def load_pinned_catalog(task, k8s_request):
     if type(review_margin) not in (float, int) or not 0 <= review_margin <= 1:
         raise RuntimeError("task-runtime-config-invalid")
     runtime["judge_review_margin"] = review_margin
+    prompts = runtime.get("prompts", {"worker": "", "planner": "", "judge": ""})
+    if (not isinstance(prompts, dict) or set(prompts) != {"worker", "planner", "judge"}
+            or any(not isinstance(value, str) or len(value) > 2000 for value in prompts.values())):
+        raise RuntimeError("task-runtime-config-invalid")
+    runtime["prompts"] = prompts
     for endpoint in (runtime["acceptor_url"], runtime["coder_url"], runtime["judge_url"]):
         parsed = urllib.parse.urlsplit(endpoint)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
@@ -273,14 +291,13 @@ def dispatch_task(task, runtime, k8s_request):
     pod_spec = job_spec["template"]["spec"]
     pod_spec["restartPolicy"] = "Never"
     pod_spec["automountServiceAccountToken"] = False
-    catalog_prefix = os.environ.get("AGENT_CATALOG_NAME_PREFIX", "orchestrator-agent-catalog-")
-    catalog_name = catalog_prefix + (task["config_hash"] or "")[:12]
-    if not task["config_hash"] or not re.fullmatch(r"[a-z0-9-]+", catalog_name):
+    pod_spec["volumes"] = [volume for volume in pod_spec.get("volumes", [])
+                            if volume.get("name") != "agent-catalog"]
+    for template_container in pod_spec.get("containers", []):
+        template_container["volumeMounts"] = [mount for mount in template_container.get("volumeMounts", [])
+                                               if mount.get("name") != "agent-catalog"]
+    if not task["config_hash"] or not re.fullmatch(r"[a-f0-9]{64}", task["config_hash"]):
         raise RuntimeError("task-config-pin-invalid")
-    k8s_request("GET", f"/api/v1/namespaces/{namespace}/configmaps/{catalog_name}")
-    for volume in pod_spec.get("volumes", []):
-        if volume.get("name") == "agent-catalog":
-            volume["configMap"]["name"] = catalog_name
     container = next(item for item in pod_spec["containers"] if item["name"] == "coder")
     if any(entry.get("name") in {"CODEFACTORY_AUTH_TOKEN", "REPO_GITHUB_PAT", "GITHUB_TOKEN", "PR_GITHUB_TOKEN",
                                  "GITHUB_AUTH_MODE", "CODEFACTORY_AUTH_MODE"} for entry in container.get("env", [])):
@@ -297,7 +314,7 @@ def dispatch_task(task, runtime, k8s_request):
         "AGENT_CONFIG_VERSION", "AGENT_CONFIG_HASH", "JUDGE_URL", "JUDGE_MODEL",
         "JUDGE_NATIVE_DOWNLOAD", "JUDGE_ACCEPT_THRESHOLD", "OPENAI_API_KEY", "CODER_URL",
         "CODER_MODEL", "CODER_NATIVE_DOWNLOAD", "ACCEPTOR_URL", "ALLOWED_REPOS", "ALLOWED_REPO",
-        "TASK_REPO_POLICIES", "WORKER_ROLE"}]
+        "TASK_REPO_POLICIES", "WORKER_ROLE", "WORKER_PROMPT_GUIDANCE"}]
     env.extend([
         {"name": "ASSIGNED_TASK_ID", "value": task["task_id"]},
         {"name": "TASK_ATTEMPT", "value": str(task["attempts"])},
@@ -317,6 +334,7 @@ def dispatch_task(task, runtime, k8s_request):
         {"name": "CODER_NATIVE_DOWNLOAD", "value": str(runtime.get("coder_native_download", False)).lower()},
         {"name": "ACCEPTOR_URL", "value": runtime["acceptor_url"]},
         {"name": "TASK_REPO_POLICIES", "value": json.dumps(runtime["repo_policies"], sort_keys=True)},
+        {"name": "WORKER_PROMPT_GUIDANCE", "value": runtime.get("prompts", {}).get("worker", "")},
     ])
     container["env"] = env
     created = k8s_request("POST", f"/apis/batch/v1/namespaces/{namespace}/jobs", job)

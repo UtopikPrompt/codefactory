@@ -43,6 +43,32 @@ displaying a false empty interaction history.
 Manual retries can inherit feedback from their `retry_of` task; the saved
 feedback attempt number can therefore refer to the original task.
 
+## Model and prompt revisions
+
+Management → Models can draft and validate coder/judge model IDs plus bounded
+worker, planner and judge guidance. Apply requires the loaded config hash and
+the same authenticated, same-origin Management request checks as other writes.
+The gateway validates a fixed role/field allowlist, records the operator and
+timestamp, and atomically advances the active revision only when the expected
+hash still matches. Prompt guidance cannot change catalog tools, roles, file
+limits, credentials, task authority or response contracts; agent definitions
+remain read-only. Endpoints, context settings, compute arguments and inference
+pod rollouts are not managed here.
+
+The gateway stores immutable config revisions in the durable task SQLite
+database on the existing task-state volume. Each newly accepted task pins the
+active version and hash in its task row; the supervisor reads that exact
+revision for planning, worker dispatch and judging. Running tasks keep their
+original snapshot. No Helm-owned ConfigMap is written and applying a revision
+does not restart inference pods.
+
+Helm provides the initial config seed only. Once the database has been seeded,
+subsequent chart values do not replace the active UI-managed model or prompt
+revision. Use Management for those live changes and include the task-state
+database in the existing backup/retention plan so task snapshots remain
+available. ConfigMap reads remain only for tasks pinned before this revision
+store was introduced.
+
 ## Local checks
 
 From the repository root, using the service test environment:

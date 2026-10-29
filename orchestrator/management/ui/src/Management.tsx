@@ -1,10 +1,10 @@
-import { Fragment, useState, useSyncExternalStore } from 'react'
+import { Fragment, useEffect, useState, useSyncExternalStore } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Activity, ArrowLeft, ArrowRight, Bot, Check, ChevronRight, CircuitBoard, Copy, ExternalLink, GitPullRequest, ListTodo, LoaderCircle, LockKeyhole, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { api, ApiError } from './api'
-import type { Config, Task, TaskPage } from './api'
+import type { Config, ConfigDraft, Task, TaskPage } from './api'
 import Interactions from './Interactions'
 
 function subscribeRoute(callback: () => void) {
@@ -174,11 +174,55 @@ function Tasks({ taskId }: { taskId?: string }) {
 
 function Configuration({ view }: { view: 'models' | 'agents' }) {
     const query = useQuery({ queryKey: ['config'], queryFn: () => api<Config>('/config') })
+    const client = useQueryClient()
+    const [draft, setDraft] = useState<ConfigDraft | null>(null)
+    const [validatedDraft, setValidatedDraft] = useState('')
+    useEffect(() => {
+        if (!query.data) return
+        setDraft({
+            expected_hash: query.data.hash || '',
+            models: Object.fromEntries(query.data.models.map(model => [model.role, model.model])) as ConfigDraft['models'],
+            prompts: query.data.prompts,
+        })
+        setValidatedDraft('')
+    }, [query.data?.hash])
+    const validation = useMutation({
+        mutationFn: (candidate: ConfigDraft) => api<{ valid: boolean }>('/config/validate', candidate),
+        onSuccess: (_result, candidate) => setValidatedDraft(JSON.stringify(candidate)),
+    })
+    const application = useMutation({
+        mutationFn: (candidate: ConfigDraft) => api<Config>('/config/apply', candidate),
+        onSuccess: config => {
+            client.setQueryData<Config>(['config'], { ...config, source: 'Durable task config' })
+            setValidatedDraft('')
+        },
+    })
+    const draftKey = draft ? JSON.stringify(draft) : ''
+    const canApply = Boolean(draft && validatedDraft === draftKey && query.data?.hash === draft.expected_hash)
+    function updateModel(role: 'coder' | 'judge', model: string) {
+        setDraft(current => current && ({ ...current, models: { ...current.models, [role]: model } }))
+        setValidatedDraft('')
+    }
+    function updatePrompt(role: 'worker' | 'planner' | 'judge', prompt: string) {
+        setDraft(current => current && ({ ...current, prompts: { ...current.prompts, [role]: prompt } }))
+        setValidatedDraft('')
+    }
     return <>
-        <header className="page-heading"><div><div className="eyebrow"><ShieldCheck />Git / Helm managed</div><h1>{view === 'models' ? 'Models' : 'Agents'}</h1></div><span className="read-only"><LockKeyhole />Read only</span></header>
+        <header className="page-heading"><div><div className="eyebrow"><ShieldCheck />{query.data?.source || 'Task configuration'}</div><h1>{view === 'models' ? 'Models' : 'Agents'}</h1></div>{view === 'agents' && <span className="read-only"><LockKeyhole />Read only</span>}</header>
         {query.isPending || query.isError ? <QueryState loading={query.isPending} error={query.error} retry={() => { void query.refetch() }} /> : <>
             <div className="config-meta"><span>Version <strong>{query.data.version}</strong></span><span className="config-hash mono" title={query.data.hash || undefined}>{query.data.hash || 'Hash not recorded'}</span><IconButton label="Refresh configuration" onClick={() => { void query.refetch() }} disabled={query.isFetching}><RefreshCw /></IconButton></div>
-            {view === 'models' ? <div className="table-scroll"><table><thead><tr><th>Configured model</th><th>Role</th><th>Native download</th><th>Live availability</th></tr></thead><tbody>{query.data.models.map(model => <tr key={model.role}><td><div className="identity-cell"><CircuitBoard /><span className="mono">{model.model || 'Not configured'}</span></div></td><td>{model.role}</td><td>{model.native_download ? 'Enabled' : 'Disabled'}</td><td><Status value="unknown" /></td></tr>)}</tbody></table></div> :
+            {view === 'models' ? <>
+                <form className="config-editor" onSubmit={event => { event.preventDefault(); if (draft && !validation.isPending) validation.mutate(draft) }}>
+                    <div className="table-scroll"><table><thead><tr><th>Model ID</th><th>Role</th><th>Native download</th><th>Live availability</th></tr></thead><tbody>{query.data.models.map(model => <tr key={model.role}><td><input aria-label={`${model.role} model`} className="model-input mono" value={draft?.models[model.role as 'coder' | 'judge'] || ''} maxLength={256} onChange={event => updateModel(model.role as 'coder' | 'judge', event.target.value)} /></td><td>{model.role}</td><td>{model.native_download ? 'Enabled' : 'Disabled'}</td><td><Status value="unknown" /></td></tr>)}</tbody></table></div>
+                    <div className="prompt-grid">{([
+                        ['worker', 'Worker guidance'], ['planner', 'Planner guidance'], ['judge', 'Judge guidance'],
+                    ] as const).map(([role, label]) => <label className="prompt-field" key={role} htmlFor={`prompt-${role}`}>{label}<textarea className="mono" id={`prompt-${role}`} rows={4} maxLength={2000} value={draft?.prompts[role] || ''} onChange={event => updatePrompt(role, event.target.value)} /></label>)}</div>
+                    <p className="config-boundary">Fixed tools, task authority, file limits, and output contracts remain unchanged.</p>
+                    {(validation.error || application.error) && <p className="error" role="alert">{(validation.error || application.error)?.message}</p>}
+                    {validatedDraft === draftKey && <p className="config-valid" role="status">Draft validated against the active version.</p>}
+                    <div className="config-actions"><button type="submit" disabled={!draft || validation.isPending || application.isPending}>{validation.isPending ? <LoaderCircle className="spin" /> : <Check />}{validation.isPending ? 'Validating' : 'Validate draft'}</button><button type="button" className="primary" disabled={!canApply || application.isPending} onClick={() => { if (draft) application.mutate(draft) }}>{application.isPending ? <LoaderCircle className="spin" /> : <ShieldCheck />}{application.isPending ? 'Applying' : 'Apply for future tasks'}</button></div>
+                </form>
+            </> :
                 query.data.agents.length === 0 ? <QueryState empty="No catalog agents configured." retry={() => { void query.refetch() }} /> : <div className="table-scroll"><table><thead><tr><th>Catalog agent</th><th>Endpoint alias</th><th>Tools</th><th>File limit</th><th>Live availability</th></tr></thead><tbody>{query.data.agents.map(agent => <tr key={agent.role}><td><div className="identity-cell"><Bot /><span>{agent.id}</span></div></td><td className="mono">{agent.endpoint_alias}</td><td><div className="tool-list">{agent.tools.map(tool => <span key={tool} className="mono">{tool}</span>)}</div></td><td>{agent.max_files}</td><td><Status value="unknown" /></td></tr>)}</tbody></table></div>}
         </>}
     </>

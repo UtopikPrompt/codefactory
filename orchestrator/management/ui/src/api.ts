@@ -56,15 +56,21 @@ export interface Config {
     version: string
     hash: string | null
     models: { role: string; model: string; native_download: boolean; availability: string }[]
+    prompts: { worker: string; planner: string; judge: string }
     agents: { id: string; role: string; endpoint_alias: string; max_files: number; tools: string[]; availability: string }[]
+}
+export interface ConfigDraft {
+    expected_hash: string
+    models: { coder: string; judge: string }
+    prompts: { worker: string; planner: string; judge: string }
 }
 export class ApiError extends Error {
     readonly status: number
     constructor(status: number) {
         const messages: Record<number, string> = {
-            400: 'Invalid request. Check the repository and issue number.',
+            400: 'The request or configuration draft is invalid.',
             401: 'Sign in is required.', 403: 'Access denied.', 404: 'Task not found.',
-            409: 'Task conflicts with an existing attempt.',
+            409: 'Configuration or task state changed. Refresh and try again.',
             503: 'Management access or server configuration is unavailable.',
         }
         super(messages[status] || 'Request failed. Try again.')

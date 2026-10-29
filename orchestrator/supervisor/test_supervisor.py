@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import supervisor as supervisor_module
+import yaml
 from supervisor import (
     build_evaluation_prompt,
     claim_queued_task,
@@ -226,7 +227,7 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
         ("task", "queued", original, json.dumps(candidate), "reused plan", "1", "pinned-hash"))
     db.close()
     monkeypatch.setattr(supervisor_module, "task_database", lambda: task_database(path))
-    monkeypatch.setattr(supervisor_module, "_load_pinned_catalog", lambda _task: ({}, {"threshold": 0.8}))
+    monkeypatch.setattr(supervisor_module, "_load_pinned_catalog", lambda _task, _db=None: ({}, {"threshold": 0.8}))
     planner = AsyncMock(side_effect=AssertionError("Must reuse persisted plan"))
     monkeypatch.setattr(supervisor_module, "_plan_task", planner)
     monkeypatch.setattr(supervisor_module, "_verified_candidate_patch", lambda _task, value: value)
@@ -331,7 +332,7 @@ def test_catalog_failure_consumes_eight_attempts_then_waits_for_lease(monkeypatc
     db.close()
     monkeypatch.setattr(supervisor_module, "task_database", lambda: task_database(path))
 
-    def deny_catalog(_task):
+    def deny_catalog(_task, _db=None):
         raise RuntimeError("kubernetes-api-http-403")
 
     completions = []
@@ -390,7 +391,8 @@ def test_pinned_catalog_is_schema_validated_and_role_tools_are_bounded(monkeypat
     chart = Path(__file__).resolve().parents[2] / "helm/orchestrator/files"
     content = (chart / "agent-catalog.yaml").read_text()
     schema = (chart / "agent-catalog.schema.json").read_text()
-    runtime = json.dumps({"acceptor_url": "https://gateway", "coder_url": "http://p40-0/v1",
+    runtime = json.dumps({"version": "1", "catalog": content,
+                          "acceptor_url": "https://gateway", "coder_url": "http://p40-0/v1",
                           "coder_model": "coder-model", "coder_native_download": False,
                           "judge_url": "http://p40-1/v1", "judge_model": "judge-model",
                           "threshold": 0.8, "max_total_attempts": 8,
@@ -413,6 +415,39 @@ def test_pinned_catalog_is_schema_validated_and_role_tools_are_bounded(monkeypat
     task["config_hash"] = hashlib.sha256((invalid + schema + runtime).encode()).hexdigest()
     with pytest.raises(RuntimeError, match="task-catalog-schema-invalid"):
         supervisor_module._load_pinned_catalog(task)
+
+
+def test_pinned_task_loads_its_database_config_revision(tmp_path, monkeypatch):
+    chart = Path(__file__).resolve().parents[2] / "helm/orchestrator/files"
+    catalog_doc = yaml.safe_load((chart / "agent-catalog.yaml").read_text())
+    catalog_doc["config_version"] = "1-r2"
+    catalog = yaml.safe_dump(catalog_doc, sort_keys=False)
+    schema = (chart / "agent-catalog.schema.json").read_text()
+    runtime = json.dumps({"version": "1-r2", "catalog": catalog,
+                          "acceptor_url": "https://gateway", "coder_url": "http://coder",
+                          "coder_model": "new/coder", "coder_native_download": False,
+                          "judge_url": "http://judge", "judge_model": "new/judge",
+                          "threshold": 0.8, "max_total_attempts": 8,
+                          "allowed_base_branches": "main", "reviewers": "reviewer",
+                          "repo_policies": {}, "worker_parallelism": 1,
+                          "prompts": {"worker": "Prefer concise edits.", "planner": "", "judge": ""}},
+                         sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256((catalog + schema + runtime).encode()).hexdigest()
+    db = supervisor_module.task_database(str(tmp_path / "tasks.sqlite3"))
+    try:
+        db.execute("""INSERT INTO agent_config_versions
+            (config_hash,config_version,revision,catalog,catalog_schema,runtime_config,created_at,created_by)
+            VALUES(?,?,?,?,?,?,?,?)""",
+                   (digest, "1-r2", 2, catalog, schema, runtime, 1.0, "operator"))
+        db.execute("INSERT INTO agent_config_state(singleton,active_config_hash) VALUES(1,?)", (digest,))
+        monkeypatch.setattr(supervisor_module, "_k8s_request", lambda *_args: pytest.fail("unexpected ConfigMap read"))
+        loaded_catalog, loaded_runtime = supervisor_module._load_pinned_catalog(
+            {"config_hash": digest, "config_version": "1-r2"}, db)
+        assert loaded_catalog["config_version"] == "1-r2"
+        assert loaded_runtime["coder_model"] == "new/coder"
+        assert loaded_runtime["prompts"]["worker"] == "Prefer concise edits."
+    finally:
+        db.close()
 
 
 def test_judge_calls_configured_p40_1_endpoint(monkeypatch):
@@ -535,7 +570,9 @@ def test_supervisor_native_model_preparation(monkeypatch, operation, initial):
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client_class(
         transport=httpx.MockTransport(transport), **kwargs))
     runtime = {"judge_url": "http://judge/v1", "judge_model": model,
-               "judge_native_download": initial != "disabled"}
+               "judge_native_download": initial != "disabled",
+               "prompts": {"worker": "", "planner": "Keep the plan bounded.",
+                           "judge": "Check the validation evidence."}}
     task = {"payload": '{"task_id":"task"}'}
     if operation == "judge":
         candidate = {"validation": {"status": "passed"}, "patch": "diff"}
@@ -544,6 +581,12 @@ def test_supervisor_native_model_preparation(monkeypatch, operation, initial):
         assert asyncio.run(supervisor_module._plan_task(task, {"roles": {"coder": {}}}, runtime)) == "implement fix"
     assert sum(request.method == "POST" and request.url.path == "/models" for request in calls) == (initial in (None, "incomplete"))
     assert calls[-1].url.path == "/v1/chat/completions"
+    messages = json.loads(calls[-1].content)["messages"]
+    assert "untrusted data" in messages[0]["content"]
+    request_payload = json.loads(messages[1]["content"])
+    guidance_key = "operator_guidance"
+    assert request_payload[guidance_key] == ("Check the validation evidence." if operation == "judge"
+                                             else "Keep the plan bounded.")
 
 
 @pytest.mark.parametrize("operation", ["judge", "plan"])
@@ -685,8 +728,8 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["supervisor_plan"] == "test plan"
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["retry_feedback"] == json.loads(task["retry_feedback"])
     assert "retry_feedback" not in json.loads(task["payload"])
-    catalog_name = job["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"]
-    assert catalog_name == f"orchestrator-agent-catalog-{catalog_hash[:12]}"
+    assert all(volume["name"] != "agent-catalog" for volume in job["spec"]["template"]["spec"]["volumes"])
+    assert env["WORKER_PROMPT_GUIDANCE"]["value"] == ""
     assert job["spec"]["ttlSecondsAfterFinished"] == (ttl if ttl is not None else 86400)
 
 

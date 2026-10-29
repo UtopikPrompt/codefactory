@@ -11,6 +11,7 @@
 {{- $config := dict
 	"catalog" (.Files.Get "files/agent-catalog.yaml")
 	"version" (.Values.agentCatalog.version | default "1")
+	"prompts" (dict "worker" "" "planner" "" "judge" "")
 	"acceptor_url" (index .Values.supervisor.config "acceptor-url")
 	"coder_url" $coderUrl
 	"coder_native_download" $coderNative

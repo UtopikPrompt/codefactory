@@ -40,8 +40,7 @@ Worker configuration and mutable Job spec; the supervisor creates one Job per ta
         "imagePullPolicy" (.Values.worker.imagePullPolicy | default "IfNotPresent")
         "volumeMounts" (list
           (dict "name" "workspace" "mountPath" "/data/task-work")
-          (dict "name" "loop-state" "mountPath" "/data/loop-state")
-          (dict "name" "agent-catalog" "mountPath" "/etc/codefactory/agent-catalog" "readOnly" true))
+          (dict "name" "loop-state" "mountPath" "/data/loop-state"))
         "env" (list
           (dict "name" "CODER_API_KEY" "valueFrom" (dict "secretKeyRef" (dict
             "name" (.Values.secretRefs.coderApiKey.name | default "codefactory-coder-api-key")
@@ -63,9 +62,7 @@ Worker configuration and mutable Job spec; the supervisor creates one Job per ta
         "ports" (list (dict "name" "metrics" "containerPort" 9000))))
       "volumes" (list
         (dict "name" "workspace" "emptyDir" (dict "sizeLimit" "512Mi"))
-        (dict "name" "loop-state" "emptyDir" (dict))
-        (dict "name" "agent-catalog" "configMap" (dict
-          "name" (printf "%s-agent-catalog-%s" .Chart.Name (include "orchestrator.agentCatalogHash" . | trunc 12)))))
+        (dict "name" "loop-state" "emptyDir" (dict)))
       "imagePullSecrets" .Values.imagePullSecrets))
 -}}
 ---
