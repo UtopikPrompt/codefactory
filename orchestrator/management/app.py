@@ -260,6 +260,51 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
             "judge_score": score if type(score) in (int, float) and 0 <= score <= 1 else None,
         }
 
+
+    def task_events(data):
+        events = data.get("events")
+        if not isinstance(events, list):
+            return None
+        reasons = {
+            "no-op-edit", "empty-or-invalid-edits", "invalid-generation-output", "invalid-generated-edit",
+            "edit-outside-policy", "unsafe-edit-path", "protected-edit-path", "secret-in-model-context",
+            "edits-not-applied", "empty-patch", "validation-failed", "validation-output-too-large",
+            "coder-http-error", "worker-result-timeout", "worker-candidate-failed", "candidate-patch-edits-mismatch",
+            "candidate-edit-set-mismatch", "candidate-validation-not-passed", "task-execution-failed",
+            "max-total-attempts-exhausted", "planner-credential-required", "planner-output-invalid",
+            "judge-credential-required", "judge-score-invalid", "task-authentication-unsupported",
+            "task-catalog-hash-mismatch", "task-catalog-schema-invalid", "task-catalog-version-unsupported",
+            "task-catalog-role-set-invalid", "task-catalog-role-invalid", "task-catalog-capability-boundary-invalid",
+            "pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",
+            "pr-publication-credential-required", "candidate-publish-data-missing", "base-branch-changed",
+            "existing-task-branch-conflict", "existing-pr-policy-conflict", "pr-creation-unverified", "pr-identity-invalid",
+            "judge-rejected",
+        }
+        topics = ("tests", "correctness", "security", "scope", "patch-integrity")
+        safe_events = []
+        for event in events[-128:]:
+            if not isinstance(event, dict):
+                continue
+            timestamp = event.get("timestamp")
+            attempt = event.get("attempt")
+            if (type(timestamp) not in (int, float) or not 0 < timestamp < 100000000000
+                    or type(attempt) is not int or not 1 <= attempt <= 8):
+                continue
+            safe_events.append({
+                "timestamp": timestamp,
+                "attempt": attempt,
+                "actor": event.get("actor") if event.get("actor") in ("supervisor", "worker", "judge") else "supervisor",
+                "action": event.get("action") if event.get("action") in ("claim", "plan", "dispatch", "candidate", "review", "publish", "task") else "task",
+                "outcome": event.get("outcome") if event.get("outcome") in (
+                    "started", "recorded", "reused", "dispatched", "returned", "failed", "accepted", "rejected", "retrying", "completed") else "recorded",
+                "reason": event.get("reason") if event.get("reason") in reasons else None,
+                "validation_status": event.get("validation_status") if event.get("validation_status") in ("passed", "failed", "not-run") else None,
+                "score": event.get("score") if type(event.get("score")) in (int, float) and 0 <= event["score"] <= 1 else None,
+                "review_topics": [topic for topic in topics if isinstance(event.get("review_topics"), list)
+                                  and topic in event["review_topics"]],
+            })
+        return safe_events
+
     @app.get("/healthz")
     def health():
         return {"status": "ok"}
@@ -288,6 +333,7 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
         summary = task_summary(data)
         summary["execution"] = task_execution(data)
         summary["coordination"] = task_coordination(data)
+        summary["events"] = task_events(data)
         result = data.get("result")
         pr_url = result.get("pr_url") if isinstance(result, dict) else None
         repo = data.get("repo")

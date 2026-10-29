@@ -1,6 +1,59 @@
 """Task intake, callback, retry, and status operations for the gateway."""
 
 import json
+import time
+
+
+EVENT_REASONS = {
+    "no-op-edit", "empty-or-invalid-edits", "invalid-generation-output", "invalid-generated-edit",
+    "edit-outside-policy", "unsafe-edit-path", "protected-edit-path", "secret-in-model-context",
+    "edits-not-applied", "empty-patch", "validation-failed", "validation-output-too-large",
+    "coder-http-error", "worker-result-timeout", "worker-candidate-failed", "candidate-patch-edits-mismatch",
+    "candidate-edit-set-mismatch", "candidate-validation-not-passed", "task-execution-failed",
+    "max-total-attempts-exhausted", "planner-credential-required", "planner-output-invalid",
+    "judge-credential-required", "judge-score-invalid", "task-authentication-unsupported",
+    "task-catalog-hash-mismatch", "task-catalog-schema-invalid", "task-catalog-version-unsupported",
+    "task-catalog-role-set-invalid", "task-catalog-role-invalid", "task-catalog-capability-boundary-invalid",
+    "pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",
+    "pr-publication-credential-required", "candidate-publish-data-missing", "base-branch-changed",
+    "existing-task-branch-conflict", "existing-pr-policy-conflict", "pr-creation-unverified", "pr-identity-invalid",
+    "judge-rejected",
+}
+EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
+
+
+def append_event(db, task_id, attempt, actor, action, outcome, *, reason=None, validation_status=None, score=None,
+                 review_topics=()):
+    safe_reason = reason if reason in EVENT_REASONS else None
+    safe_validation = validation_status if validation_status in ("passed", "failed", "not-run") else None
+    safe_score = score if type(score) in (int, float) and 0 <= score <= 1 else None
+    topics = [topic for topic in EVENT_TOPICS if topic in review_topics]
+    db.execute("""INSERT INTO task_events(task_id,created_at,attempt,actor,action,outcome,reason,
+        validation_status,score,review_topics) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (task_id, time.time(), max(1, min(8, int(attempt))), actor, action, outcome, safe_reason,
+         safe_validation, safe_score, json.dumps(topics)))
+    db.execute("""DELETE FROM task_events WHERE task_id=? AND event_id NOT IN
+        (SELECT event_id FROM task_events WHERE task_id=? ORDER BY event_id DESC LIMIT 128)""", (task_id, task_id))
+
+
+def operational_events(db, task_id):
+    events = []
+    for row in db.execute("SELECT * FROM task_events WHERE task_id=? ORDER BY event_id", (task_id,)):
+        try:
+            topics = json.loads(row["review_topics"] or "[]")
+        except (ValueError, TypeError):
+            topics = []
+        events.append({
+            "timestamp": row["created_at"], "attempt": row["attempt"] if type(row["attempt"]) is int and 1 <= row["attempt"] <= 8 else None,
+            "actor": row["actor"] if row["actor"] in ("supervisor", "worker", "judge") else "supervisor",
+            "action": row["action"] if row["action"] in ("claim", "plan", "dispatch", "candidate", "review", "publish", "task") else "task",
+            "outcome": row["outcome"] if row["outcome"] in ("started", "recorded", "reused", "dispatched", "returned", "failed", "accepted", "rejected", "retrying", "completed") else "recorded",
+            "reason": row["reason"] if row["reason"] in EVENT_REASONS else None,
+            "validation_status": row["validation_status"] if row["validation_status"] in ("passed", "failed", "not-run") else None,
+            "score": row["score"] if type(row["score"]) in (int, float) and 0 <= row["score"] <= 1 else None,
+            "review_topics": [topic for topic in EVENT_TOPICS if isinstance(topics, list) and topic in topics],
+        })
+    return events
 
 
 def coordination_summary(task):
@@ -97,6 +150,7 @@ class TaskAPI:
                     "SELECT task_id FROM tasks WHERE retry_of=?", (task["task_id"],))), None),
                 "job": gateway.json.loads(task["job"]) if task["job"] else None,
                 "coordination": coordination_summary(task),
+                "events": operational_events(db, task["task_id"]),
             })
         except PermissionError:
             handler._json(403, {"error": "repository-mismatch"})
@@ -288,6 +342,15 @@ class TaskAPI:
                 raise ValueError("result-identity-mismatch")
             if payload.get("status") not in ("candidate", "candidate_failed"):
                 raise ValueError("candidate-status-required")
+            active_attempt = max(1, task["attempts"] or 0)
+            reported_attempt = payload.get("attempt")
+            if reported_attempt is None and active_attempt == 1:
+                reported_attempt = 1
+            if type(reported_attempt) is not int or reported_attempt != active_attempt:
+                db.commit()
+                handler._json(409, {"error": "task-attempt-mismatch"})
+                return
+            payload = {**payload, "attempt": reported_attempt}
             if task["status"] in ("completed", "failed"):
                 db.commit()
                 handler._json(409, {"error": "task-already-terminal"})
@@ -300,6 +363,16 @@ class TaskAPI:
                 handler._json(409, {"error": "terminal-result-conflict"})
                 return
             db.execute("UPDATE tasks SET result=? WHERE task_id=?", (serialized, task["task_id"]))
+            if not task["result"]:
+                try:
+                    validation = payload.get("validation")
+                    validation = validation if isinstance(validation, dict) else {}
+                    reason = str(payload.get("error", "")).split(":", 1)[0]
+                    append_event(db, task["task_id"], reported_attempt, "worker", "candidate",
+                                 "failed" if payload["status"] == "candidate_failed" else "returned",
+                                 reason=reason, validation_status=validation.get("status"))
+                except (TypeError, ValueError):
+                    append_event(db, task["task_id"], task["attempts"] or 1, "worker", "candidate", "returned")
             db.commit()
             handler._json(200, {"task_id": task["task_id"], "status": payload["status"]})
         finally:

@@ -575,6 +575,68 @@ tr.selected td {
     margin-top: 12px;
 }
 
+.interaction-timeline-section {
+    margin-top: 20px;
+}
+
+.interaction-timeline-section h4 {
+    margin-bottom: 12px;
+}
+
+.timeline-state {
+    color: var(--muted);
+}
+
+.interaction-timeline {
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0 0 0 18px;
+    border-left: 1px solid var(--border);
+    list-style: none;
+}
+
+.interaction-timeline li {
+    position: relative;
+    min-width: 0;
+    padding: 0 0 18px 14px;
+}
+
+.interaction-timeline li::before {
+    position: absolute;
+    top: 4px;
+    left: -22px;
+    width: 7px;
+    height: 7px;
+    border: 2px solid var(--surface);
+    border-radius: 50%;
+    background: var(--accent);
+    content: '';
+}
+
+.timeline-event-heading {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px 12px;
+    font-size: 12px;
+}
+
+.timeline-event-heading span,
+.interaction-timeline time {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.interaction-timeline time {
+    display: block;
+    margin-top: 3px;
+}
+
+.interaction-timeline p {
+    margin: 6px 0 0;
+}
+
 .detail-section {
     min-width: 0;
 }

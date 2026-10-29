@@ -36,7 +36,65 @@ def task_database(path: str | None = None):
                               ("config_hash", "TEXT"), ("plan", "TEXT"), ("retry_feedback", "TEXT")):
         if name not in columns:
             db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
+    db.execute("""CREATE TABLE IF NOT EXISTS task_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, created_at REAL NOT NULL,
+        attempt INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL,
+        reason TEXT, validation_status TEXT, score REAL, review_topics TEXT NOT NULL DEFAULT '[]')""")
+    db.execute("CREATE INDEX IF NOT EXISTS task_events_by_task ON task_events(task_id, event_id)")
     return db
+
+
+EVENT_REASONS = {
+    "no-op-edit", "empty-or-invalid-edits", "invalid-generation-output", "invalid-generated-edit",
+    "edit-outside-policy", "unsafe-edit-path", "protected-edit-path", "secret-in-model-context",
+    "edits-not-applied", "empty-patch", "validation-failed", "validation-output-too-large",
+    "coder-http-error", "worker-result-timeout", "worker-candidate-failed", "candidate-patch-edits-mismatch",
+    "candidate-edit-set-mismatch", "candidate-validation-not-passed", "task-execution-failed",
+    "max-total-attempts-exhausted", "planner-credential-required", "planner-output-invalid",
+    "judge-credential-required", "judge-score-invalid", "task-authentication-unsupported",
+    "task-catalog-hash-mismatch", "task-catalog-schema-invalid", "task-catalog-version-unsupported",
+    "task-catalog-role-set-invalid", "task-catalog-role-invalid", "task-catalog-capability-boundary-invalid",
+    "pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",
+    "pr-publication-credential-required", "candidate-publish-data-missing", "base-branch-changed",
+    "existing-task-branch-conflict", "existing-pr-policy-conflict", "pr-creation-unverified", "pr-identity-invalid",
+    "judge-rejected",
+}
+EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
+
+
+def record_task_event(db, task_id, attempt, actor, action, outcome, *, reason=None, validation_status=None,
+                      score=None, review_topics=()):
+    if actor not in ("supervisor", "worker", "judge") or action not in (
+            "claim", "plan", "dispatch", "candidate", "review", "publish", "task") or outcome not in (
+            "started", "recorded", "reused", "dispatched", "returned", "failed", "accepted", "rejected", "retrying", "completed"):
+        raise ValueError("invalid-operational-event")
+    safe_reason = reason if reason in EVENT_REASONS else None
+    safe_validation = validation_status if validation_status in ("passed", "failed", "not-run") else None
+    safe_score = score if type(score) in (int, float) and 0 <= score <= 1 else None
+    topics = [topic for topic in EVENT_TOPICS if topic in review_topics]
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        db.execute("""INSERT INTO task_events(task_id,created_at,attempt,actor,action,outcome,reason,
+            validation_status,score,review_topics) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (task_id, time.time(), max(1, min(8, int(attempt))), actor, action, outcome, safe_reason,
+             safe_validation, safe_score, json.dumps(topics)))
+        db.execute("""DELETE FROM task_events WHERE task_id=? AND event_id NOT IN
+            (SELECT event_id FROM task_events WHERE task_id=? ORDER BY event_id DESC LIMIT 128)""", (task_id, task_id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def review_topics(review):
+    text = str(review)[:4000].lower()
+    return [topic for topic, pattern in (
+        ("tests", r"\b(test\w*|coverage|validation)\b"),
+        ("correctness", r"\b(bug\w*|correct\w*|logic|behavior|requirement\w*)\b"),
+        ("security", r"\b(secur\w*|secret\w*|credential\w*|unsafe)\b"),
+        ("scope", r"\b(scope|unrelated|unnecessary)\b"),
+        ("patch-integrity", r"\b(patch|diff|unchanged|no-op)\b"),
+    ) if re.search(pattern, text)]
 
 
 def failure_feedback(stage, reason, attempt, review=""):
@@ -57,14 +115,7 @@ def failure_feedback(stage, reason, attempt, review=""):
         feedback["reason"] = "judge-rejected"
         # Extract topics, not excerpts: redaction alone cannot safely remove arbitrary
         # source, prompts, credentials, or instructions from a free-form review.
-        text = str(review)[:4000].lower()
-        feedback["review_topics"] = [topic for topic, pattern in (
-            ("tests", r"\b(test\w*|coverage|validation)\b"),
-            ("correctness", r"\b(bug\w*|correct\w*|logic|behavior|requirement\w*)\b"),
-            ("security", r"\b(secur\w*|secret\w*|credential\w*|unsafe)\b"),
-            ("scope", r"\b(scope|unrelated|unnecessary)\b"),
-            ("patch-integrity", r"\b(patch|diff|unchanged|no-op)\b"),
-        ) if re.search(pattern, text)]
+        feedback["review_topics"] = review_topics(review)
     return json.dumps(feedback, sort_keys=True)
 
 
@@ -195,6 +246,7 @@ def dispatch_task(task, runtime, k8s_request):
     assigned_payload["retry_feedback"] = json.loads(task["retry_feedback"]) if task["retry_feedback"] else None
     env = [entry for entry in container.get("env", []) if entry.get("name") not in {
         "ASSIGNED_TASK_ID", "ASSIGNED_TASK_PAYLOAD", "TASK_CALLBACK_TOKEN", "TASK_REPOSITORY",
+        "TASK_ATTEMPT",
         "TASK_CREDENTIAL_EXPIRES_AT", "TASK_REPOSITORY_AUTH",
         "AGENT_CONFIG_VERSION", "AGENT_CONFIG_HASH", "JUDGE_URL", "JUDGE_MODEL",
         "JUDGE_NATIVE_DOWNLOAD", "JUDGE_ACCEPT_THRESHOLD", "OPENAI_API_KEY", "CODER_URL",
@@ -202,6 +254,7 @@ def dispatch_task(task, runtime, k8s_request):
         "TASK_REPO_POLICIES", "WORKER_ROLE"}]
     env.extend([
         {"name": "ASSIGNED_TASK_ID", "value": task["task_id"]},
+        {"name": "TASK_ATTEMPT", "value": str(task["attempts"])},
         {"name": "ASSIGNED_TASK_PAYLOAD", "value": json.dumps(assigned_payload, sort_keys=True)},
         {"name": "AGENT_CONFIG_VERSION", "value": task["config_version"] or "1"},
         {"name": "AGENT_CONFIG_HASH", "value": task["config_hash"]},

@@ -355,6 +355,7 @@ def test_gateway_job_to_assigned_worker(monkeypatch, tmp_path, edit_key):
     assert "score" not in result and "pr_url" not in result
     assert not list(tmp_path.glob("task-*"))
     client.post.assert_awaited_once()
+    assert client.post.call_args.kwargs["json"]["attempt"] == 1
     assert "Authorization" not in client.post.call_args.kwargs["headers"]
 
 
@@ -405,7 +406,7 @@ def test_assigned_issue_reports_unsupported_discovery(monkeypatch, tmp_path):
     client.post.assert_awaited_once_with(
         "https://acceptor/api/v1/tasks/2", headers={"Content-Type": "application/json",
                        "X-Task-Token": "callback-test-secret"},
-        json=result, follow_redirects=False,
+        json={**result, "attempt": 1}, follow_redirects=False,
     )
 
 
@@ -596,7 +597,7 @@ def test_no_op_filter_preserves_changes_and_safe_diagnostics(
             "exact_unchanged": True,
         }
     assert all("private-" not in record.message for record in records)
-    assert client.post.call_args.kwargs["json"] == result
+    assert client.post.call_args.kwargs["json"] == {**result, "attempt": 1}
     assert not list(tmp_path.glob("task-*"))
 
 

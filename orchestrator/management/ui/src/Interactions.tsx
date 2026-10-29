@@ -1,4 +1,100 @@
-import type { Task } from './api'
+import type { OperationalEvent, Task } from './api'
+
+const eventReasons: Record<string, string> = {
+    'no-op-edit': 'The worker produced no effective change.',
+    'empty-or-invalid-edits': 'The worker returned empty or invalid edits.',
+    'invalid-generation-output': 'The generated response did not match the required format.',
+    'invalid-generated-edit': 'A generated edit did not pass validation.',
+    'edit-outside-policy': 'An edit fell outside the configured policy.',
+    'unsafe-edit-path': 'An edit used a disallowed file path.',
+    'protected-edit-path': 'An edit targeted a protected file.',
+    'secret-in-model-context': 'A secret was detected in model context.',
+    'edits-not-applied': 'The worker could not apply the proposed edits.',
+    'empty-patch': 'The worker returned an empty patch.',
+    'validation-failed': 'Sandbox validation failed.',
+    'validation-output-too-large': 'Validation output exceeded its limit.',
+    'coder-http-error': 'The coder service returned an error.',
+    'worker-result-timeout': 'No worker result arrived before the timeout.',
+    'worker-candidate-failed': 'The worker could not produce a candidate.',
+    'candidate-patch-edits-mismatch': 'The candidate patch did not match its edits.',
+    'candidate-edit-set-mismatch': 'The candidate file set did not match its edits.',
+    'candidate-validation-not-passed': 'The candidate did not pass validation.',
+    'task-execution-failed': 'The task failed during execution.',
+    'max-total-attempts-exhausted': 'The maximum number of attempts was reached.',
+    'planner-credential-required': 'The planner credential was unavailable.',
+    'planner-output-invalid': 'The planner returned an invalid result.',
+    'judge-credential-required': 'The judge credential was unavailable.',
+    'judge-score-invalid': 'The judge returned an invalid score.',
+    'task-authentication-unsupported': 'The task authentication mode is unsupported.',
+    'task-catalog-hash-mismatch': 'The pinned agent configuration did not match.',
+    'task-catalog-schema-invalid': 'The pinned agent configuration was invalid.',
+    'task-catalog-version-unsupported': 'The pinned agent configuration version is unsupported.',
+    'task-catalog-role-set-invalid': 'The configured agent roles were invalid.',
+    'task-catalog-role-invalid': 'A configured agent role was invalid.',
+    'task-catalog-capability-boundary-invalid': 'The configured agent capabilities were invalid.',
+    'pr-policy-required': 'Pull request policy was incomplete.',
+    'pr-base-branch-not-allowed': 'The base branch was not allowed.',
+    'pr-reviewer-policy-invalid': 'The reviewer policy was invalid.',
+    'pr-publication-credential-required': 'The publication credential was unavailable.',
+    'candidate-publish-data-missing': 'Required candidate publication data was missing.',
+    'base-branch-changed': 'The base branch changed during publication.',
+    'existing-task-branch-conflict': 'The existing task branch did not match this candidate.',
+    'existing-pr-policy-conflict': 'The existing pull request did not match publication policy.',
+    'pr-creation-unverified': 'Pull request creation could not be verified.',
+    'pr-identity-invalid': 'The created pull request identity was invalid.',
+    'judge-rejected': 'The judge scored the candidate below the acceptance threshold.',
+}
+
+function eventTitle(event: OperationalEvent) {
+    if (event.action === 'claim') return 'Supervisor claimed this attempt'
+    if (event.action === 'plan') return event.outcome === 'reused' ? 'Saved plan reused' : 'Plan recorded'
+    if (event.action === 'dispatch') return 'Worker dispatched'
+    if (event.action === 'candidate') return event.outcome === 'failed' ? 'Worker candidate failed' : 'Worker returned a candidate'
+    if (event.action === 'review') return event.outcome === 'accepted' ? 'Judge accepted the candidate' : 'Judge rejected the candidate'
+    if (event.action === 'publish') return 'Candidate published for human review'
+    if (event.outcome === 'retrying') return 'Attempt ended; task queued for retry'
+    if (event.outcome === 'failed') return 'Task failed'
+    if (event.outcome === 'completed') return 'Task completed'
+    return 'Task activity recorded'
+}
+
+function eventDescription(event: OperationalEvent) {
+    if (event.action === 'plan') return event.outcome === 'reused'
+        ? 'The supervisor reused the bounded plan saved earlier. Plan text is withheld.'
+        : 'A bounded plan was saved. Plan text is withheld.'
+    if (event.action === 'dispatch') return 'The supervisor created a worker job for this attempt.'
+    if (event.action === 'candidate') return `Worker result received. Validation: ${event.validation_status || 'not recorded'}.`
+    if (event.action === 'review') return 'The judge evaluated the candidate. Full review text is withheld.'
+    if (event.action === 'claim') return 'The supervisor picked up this attempt.'
+    if (event.action === 'publish') return 'A pull request was prepared for human review.'
+    return 'The recorded task outcome for this attempt.'
+}
+
+function OperationalTimeline({ events }: { events: OperationalEvent[] | null | undefined }) {
+    if (events === undefined || events === null) {
+        return <p className="timeline-state" role="status">Operational event history is unavailable from this response.</p>
+    }
+    if (events.length === 0) {
+        return <p className="timeline-state" role="status">No operational events recorded yet.</p>
+    }
+    return <ol className="interaction-timeline" aria-label="Operational event timeline">
+        {events.map((event, index) => <li key={`${event.timestamp}-${event.attempt}-${event.actor}-${event.action}-${index}`}>
+            <div className="timeline-event-heading">
+                <strong>{eventTitle(event)}</strong>
+                <span>Attempt {event.attempt} · {event.actor}</span>
+            </div>
+            <time dateTime={new Date(event.timestamp * 1000).toISOString()}>
+                {new Date(event.timestamp * 1000).toLocaleString()}
+            </time>
+            <p>{eventDescription(event)}</p>
+            {event.score !== null && <p>Recorded score: {event.score.toFixed(2)} / 1</p>}
+            {event.review_topics.length > 0 && <p>Review topics: {event.review_topics.join(', ')}</p>}
+            {event.reason && <p><strong>Recorded reason:</strong> {eventReasons[event.reason] || 'A safe operational reason was recorded.'}</p>}
+            {(event.outcome === 'failed' || event.outcome === 'retrying') && !event.reason &&
+                <p>No safe reason was retained for this outcome.</p>}
+        </li>)}
+    </ol>
+}
 
 export default function Interactions({ task }: { task: Task }) {
     const execution = task.execution
@@ -6,13 +102,13 @@ export default function Interactions({ task }: { task: Task }) {
     const feedback = coordination?.latest_feedback
     const score = coordination?.judge_score
     const hasScore = typeof score === 'number'
-    const recorded = Boolean(coordination?.plan_recorded || execution?.job_name || execution?.worker_status || execution?.validation_status || execution?.report_failed || hasScore || feedback)
+    const recorded = Boolean(task.events?.length || coordination?.plan_recorded || execution?.job_name || execution?.worker_status || execution?.validation_status || execution?.report_failed || hasScore || feedback)
     return <section className="interactions" aria-labelledby={`interactions-${task.task_id}`}>
         <div className="interaction-heading">
             <h3 id={`interactions-${task.task_id}`}>Agent interactions</h3>
             <span className="muted">Task snapshot · {task.attempts ? `Attempt count: ${task.attempts}` : 'No attempts recorded'}</span>
         </div>
-        <p className="interaction-note">Recorded task state, not a live conversation or event timeline. Jobs and feedback may belong to earlier attempts. Refreshes every 10 seconds.</p>
+        <p className="interaction-note">Sanitized operational history, not a live conversation. Jobs and feedback may belong to earlier attempts. Refreshes every 10 seconds.</p>
         {!recorded && <p className="interaction-empty" role="status">No agent interactions recorded yet. A queued task does not confirm that an agent has started.</p>}
         <ul className="interaction-grid" aria-label="Recorded agent activity">
             <li>
@@ -45,7 +141,11 @@ export default function Interactions({ task }: { task: Task }) {
                 {feedback.review_topics.length > 0 && <p>Review topics: {feedback.review_topics.join(', ')}</p>}
                 <p>Latest saved feedback only; delivery to a later coder call is not tracked. Raw reviews are not exposed.</p>
                 {task.retry_of && <p>Feedback can be inherited from the original task linked in Retry of below; its attempt number may refer to that task.</p>}
-            </> : <p>No retry feedback recorded. Earlier attempt history is not available in this snapshot.</p>}
+            </> : <p>No retry feedback recorded. Events below belong only to this task; events from a parent retry are not copied here.</p>}
+        </div>
+        <div className="interaction-timeline-section">
+            <h4>Operational timeline</h4>
+            <OperationalTimeline events={task.events} />
         </div>
         <div className="interaction-outcome">
             <h4>Outcome</h4>

@@ -29,7 +29,21 @@ from supervisor import (
     should_retry,
     task_database,
 )
-from task_runtime import failure_feedback
+from task_runtime import failure_feedback, record_task_event
+
+
+def test_operational_events_are_bounded_and_keep_attempt_attribution(tmp_path):
+    db = task_database(str(tmp_path / "events.sqlite3"))
+    try:
+        for index in range(130):
+            record_task_event(db, "task", index % 8 + 1, "supervisor", "claim", "started")
+        events = db.execute("SELECT attempt, actor, action FROM task_events ORDER BY event_id").fetchall()
+        assert len(events) == 128
+        assert events[0]["attempt"] == 3
+        assert events[-1]["attempt"] == 2
+        assert all(event["actor"] == "supervisor" and event["action"] == "claim" for event in events)
+    finally:
+        db.close()
 
 
 def test_app_publication_refreshes_scoped_token_and_preserves_runtime(monkeypatch):
@@ -222,6 +236,18 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     if failure_kind == "judge":
         assert feedback["review_topics"] == ["tests", "correctness", "security"]
     assert "private-source" not in row["retry_feedback"] and "credential-token" not in row["retry_feedback"]
+    events = db.execute("SELECT attempt, actor, action, outcome, reason FROM task_events ORDER BY event_id").fetchall()
+    assert (events[0]["attempt"], events[0]["actor"], events[0]["action"], events[0]["outcome"]) == (
+        1, "supervisor", "claim", "started")
+    assert any(event["attempt"] == 1 and event["actor"] == "supervisor" and event["action"] == "plan"
+               and event["outcome"] == "reused" for event in events)
+    if failure_kind == "judge":
+        assert any(event["attempt"] == 1 and event["actor"] == "judge" and event["action"] == "review"
+                   and event["outcome"] == "rejected" and event["reason"] == "judge-rejected" for event in events)
+        assert any(event["outcome"] == "retrying" for event in events)
+    else:
+        assert any(event["attempt"] == 1 and event["actor"] == "worker" and event["action"] == "task"
+                   and event["outcome"] == "retrying" and event["reason"] == "no-op-edit" for event in events)
     db.close()
 
     dispatched = []
@@ -241,6 +267,8 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     assert dispatched == [feedback]
     planner.assert_not_awaited()
     db = task_database(path)
+    assert db.execute("SELECT COUNT(*) FROM task_events WHERE attempt=2 AND actor='supervisor' AND action='claim'").fetchone()[0] == 1
+    assert db.execute("SELECT COUNT(*) FROM task_events WHERE attempt=2 AND actor='supervisor' AND action='plan' AND outcome='reused'").fetchone()[0] == 1
     next_feedback = json.loads(db.execute("SELECT retry_feedback FROM tasks").fetchone()[0])
     assert next_feedback == {**feedback, "attempt": 2}
     claimed = claim_queued_task(db, "before-restart", now=1000)
@@ -556,6 +584,7 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     assert "ALLOWED_REPOS" not in env and "ALLOWED_REPO" not in env
     assert env["TASK_CALLBACK_TOKEN"]["valueFrom"]["secretKeyRef"]["name"] == task["credential_ref"]
     assert env["TASK_REPOSITORY_AUTH"]["valueFrom"]["secretKeyRef"]["key"] == "repository-auth"
+    assert env["TASK_ATTEMPT"]["value"] == "1"
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["supervisor_plan"] == "test plan"
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["retry_feedback"] == json.loads(task["retry_feedback"])
     assert "retry_feedback" not in json.loads(task["payload"])

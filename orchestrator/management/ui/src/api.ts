@@ -11,6 +11,7 @@ export interface Task {
     config_version?: string | null
     config_hash?: string | null
     pr_url?: string | null
+    events?: OperationalEvent[] | null
     coordination?: {
         plan_recorded: boolean
         judge_score: number | null
@@ -27,6 +28,17 @@ export interface Task {
         error: string | null
         report_failed: boolean
     }
+}
+export interface OperationalEvent {
+    timestamp: number
+    attempt: number
+    actor: 'supervisor' | 'worker' | 'judge'
+    action: 'claim' | 'plan' | 'dispatch' | 'candidate' | 'review' | 'publish' | 'task'
+    outcome: 'started' | 'recorded' | 'reused' | 'dispatched' | 'returned' | 'failed' | 'accepted' | 'rejected' | 'retrying' | 'completed'
+    reason: string | null
+    validation_status: 'passed' | 'failed' | 'not-run' | null
+    score: number | null
+    review_topics: string[]
 }
 export interface TaskPage { tasks: Task[]; total: number; limit: number; offset: number }
 export interface Config {

@@ -30,6 +30,11 @@ def connect_task_database(path, init_lock):
             if name not in columns:
                 db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS task_retry_parent ON tasks(retry_of) WHERE retry_of IS NOT NULL")
+        db.execute("""CREATE TABLE IF NOT EXISTS task_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, created_at REAL NOT NULL,
+            attempt INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL,
+            reason TEXT, validation_status TEXT, score REAL, review_topics TEXT NOT NULL DEFAULT '[]')""")
+        db.execute("CREATE INDEX IF NOT EXISTS task_events_by_task ON task_events(task_id, event_id)")
     return db
 
 

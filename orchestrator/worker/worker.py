@@ -611,15 +611,22 @@ async def _run_worker(
         "Content-Type": "application/json",
         "X-Task-Token": os.environ["TASK_CALLBACK_TOKEN"],
     }
+    assigned_attempt = None
+    if assigned_task_id is not None:
+        attempt_text = os.environ.get("TASK_ATTEMPT", "1")
+        if not re.fullmatch(r"[1-8]", attempt_text):
+            raise ValueError("assigned-task-attempt-invalid")
+        assigned_attempt = int(attempt_text)
     job_start = time.monotonic()
     ACTIVE_JOBS.inc()
     try:
-        return await _execute_task(client, headers, acceptor_url, worker_id, spawn_payload, assigned_task_id, job_start)
+        return await _execute_task(client, headers, acceptor_url, worker_id, spawn_payload, assigned_task_id,
+                       assigned_attempt, job_start)
     finally:
         ACTIVE_JOBS.dec()
 
 
-async def _execute_task(client, headers, acceptor_url, worker_id, spawn_payload, assigned_task_id, job_start):
+async def _execute_task(client, headers, acceptor_url, worker_id, spawn_payload, assigned_task_id, assigned_attempt, job_start):
     if assigned_task_id is not None:
         task_id = assigned_task_id
         logger.info("Task assigned: %s", task_id)
@@ -664,7 +671,8 @@ async def _execute_task(client, headers, acceptor_url, worker_id, spawn_payload,
         final = {"task_id": task_id, **identity, "status": "candidate_failed", "error": "secret-in-model-context",
              "validation": {"status": "failed"}}
     try:
-        await _report_result(client, headers, acceptor_url, task_id, final)
+        report = {**final, "attempt": assigned_attempt} if assigned_attempt is not None else final
+        await _report_result(client, headers, acceptor_url, task_id, report)
     except (TaskFailure, httpx.HTTPError, ValueError):
         final = {**final, "error": "result-report-failed", "report_failed": True}
     await _record_worker_metrics(task_id, final, len(changed), job_start)

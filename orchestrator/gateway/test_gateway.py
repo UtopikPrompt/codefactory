@@ -18,6 +18,7 @@ import pytest
 import server
 import yaml
 from github_auth import AuthenticationError, AuthorizationError
+from task_api import append_event
 
 APP_VALUES = yaml.safe_load((Path(__file__).resolve().parents[2] / "helm/orchestrator/example.values.yaml").read_text())["githubAuth"]
 SECRET_REFS = {
@@ -120,12 +121,44 @@ def test_task_detail_exposes_only_safe_coordination_records(task_gateway):
         db.commit()
     finally:
         db.close()
+    db = server._task_db()
+    try:
+        append_event(db, task_id, 1, "worker", "candidate", "failed", reason="validation-failed",
+                     validation_status="failed")
+        append_event(db, task_id, 2, "judge", "review", "rejected", reason="judge-rejected", score=0.4,
+                     review_topics=["tests", "private"])
+        append_event(db, task_id, 2, "judge", "review", "rejected", reason="private review text",
+                     review_topics=["private"])
+    finally:
+        db.close()
     code, detail = task_request("GET", f"/api/v1/tasks/{task_id}")
     assert code == 200
     assert detail["coordination"] == {"plan_recorded": True, "latest_feedback": {
         "stage": "judge", "attempt": 1, "review_topics": ["tests"],
     }}
+    assert [(event["attempt"], event["actor"], event["action"], event["outcome"])
+            for event in detail["events"]] == [
+                (1, "worker", "candidate", "failed"), (2, "judge", "review", "rejected"),
+                (2, "judge", "review", "rejected"),
+            ]
+    assert detail["events"][1]["review_topics"] == ["tests"]
+    assert detail["events"][2]["reason"] is None
     assert "private plan" not in json.dumps(detail) and "secret review" not in json.dumps(detail)
+    assert "private review text" not in json.dumps(detail)
+
+
+def test_worker_result_attempt_must_match_active_attempt(task_gateway):
+    task_id = task_request("POST", "/api/v1/tasks/spawn", issue_payload())[1]["task_id"]
+    db = server._task_db()
+    db.execute("UPDATE tasks SET status='running', attempts=2 WHERE task_id=?", (task_id,))
+    db.close()
+    result = {"task_id": task_id, "repo": "org/repo", "issue_number": 2,
+              "status": "candidate_failed", "error": "validation-failed", "attempt": 1}
+    assert task_request("POST", f"/api/v1/tasks/{task_id}", result, supervisor=False)[0] == 409
+    result["attempt"] = 2
+    assert task_request("POST", f"/api/v1/tasks/{task_id}", result, supervisor=False)[0] == 200
+    events = task_request("GET", f"/api/v1/tasks/{task_id}")[1]["events"]
+    assert len(events) == 1 and events[0]["attempt"] == 2
 
 
 @pytest.fixture
@@ -716,7 +749,7 @@ def test_worker_candidate_is_durable_but_not_terminal(task_gateway):
     task_id = task_request("POST", "/api/v1/tasks/spawn", issue_payload())[1]["task_id"]
     candidate = {"task_id": task_id, "repo": "org/repo", "issue_number": 2,
                  "status": "candidate", "role": "coder", "patch": "verified later",
-                 "validation": {"status": "passed"}}
+                 "validation": {"status": "passed"}, "attempt": 1}
     code, report = task_request("POST", f"/api/v1/tasks/{task_id}", candidate)
     assert code == 200 and report["status"] == "candidate"
     state = task_request("GET", f"/api/v1/tasks/{task_id}")[1]

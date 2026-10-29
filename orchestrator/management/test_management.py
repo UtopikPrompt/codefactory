@@ -201,6 +201,7 @@ def test_admin_operations_without_repository_access(boundary, tmp_path, reposito
             "report_failed": False,
         },
         "coordination": {"plan_recorded": False, "latest_feedback": None, "judge_score": None},
+        "events": None,
         "pr_url": None,
     }
     upstream.reset_mock()
@@ -424,6 +425,28 @@ def test_coordination_summary_allowlists_feedback_and_review_score(boundary):
         "latest_feedback": {"stage": "judge", "attempt": 2, "review_topics": ["tests", "security"]},
     }
     assert "secret" not in response.text and "private" not in response.text
+
+
+def test_task_events_expose_only_bounded_operational_fields(boundary):
+    client, upstream, _, _ = boundary
+    upstream.return_value = httpx.Response(200, json={
+        "task_id": "task-1", "status": "failed", "events": [{
+            "timestamp": 1760000000, "attempt": 2, "actor": "judge", "action": "review",
+            "outcome": "rejected", "reason": "judge-rejected", "score": 0.4,
+            "review_topics": ["tests", "security", "private"], "review": "secret review",
+            "prompt": "secret prompt", "credential": "token",
+        }, {
+            "timestamp": 1760000001, "attempt": 9, "actor": "worker", "action": "candidate",
+            "outcome": "returned", "reason": "private payload",
+        }],
+    })
+    response = client.get("/management/api/tasks/task-1")
+    assert response.json()["events"] == [{
+        "timestamp": 1760000000, "attempt": 2, "actor": "judge", "action": "review",
+        "outcome": "rejected", "reason": "judge-rejected", "validation_status": None,
+        "score": 0.4, "review_topics": ["tests", "security"],
+    }]
+    assert "secret" not in response.text and "token" not in response.text and "private" not in response.text
 
 
 @pytest.mark.parametrize("coordination,score", [
