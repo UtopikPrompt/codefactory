@@ -54,6 +54,11 @@ def test_gateway_runtime_image_copies_agent_config():
     assert runtime_copy.split()[-1] == "/app/"
 
 
+def test_gateway_runtime_requirements_include_pyyaml():
+    requirements = Path(__file__).with_name("requirements.txt").read_text().splitlines()
+    assert "PyYAML>=6,<7" in requirements
+
+
 @pytest.fixture
 def task_gateway(monkeypatch, tmp_path):
     monkeypatch.setenv("TASK_DB_PATH", str(tmp_path / "tasks.sqlite3"))
