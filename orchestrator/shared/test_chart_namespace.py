@@ -298,6 +298,37 @@ def test_judge_url_and_review_margin_render():
         assert runtime["judge_url"] == expected_url
         assert runtime["judge_native_download"] is expected_native
         assert runtime["judge_review_margin"] == expected_margin
+        assert runtime["worker_parallelism"] == 1
+        assert runtime["worker_inference_endpoints"] == [{
+            "url": "http://coder.inference.svc.cluster.local:8000/v1",
+            "model": runtime["coder_model"],
+        }]
+
+
+def test_worker_endpoint_contract_rejects_mismatched_values():
+    base = yaml.safe_load((CHART / "values.yaml").read_text())
+    config = base["supervisor"]["config"]
+    cases = [
+        ({"worker-inference-endpoints": [{
+            "url": "http://coder.inference.svc.cluster.local:8000/v1", "model": "other-model",
+        }]}, "model aliases must match"),
+        ({"worker-parallelism": 2}, "cannot exceed worker-inference-endpoints count"),
+        ({"coder-url": "http://unlisted.inference.svc.cluster.local:8000/v1"},
+         "must include the effective coder URL"),
+        ({"worker-inference-endpoints": [
+            {"url": f"http://worker-{index}.inference.svc.cluster.local:8000/v1",
+             "model": config["coder-model"]} for index in range(3)
+        ]}, "maxItems"),
+    ]
+    for overrides, expected_error in cases:
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values["supervisor"]["config"].update(overrides)
+        result = subprocess.run(
+            ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator", "--values", "-"],
+            input=yaml.safe_dump(values), capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0
+        assert expected_error in result.stderr
 
 
 def test_metrics_are_not_published_by_default_and_require_nodeports():
@@ -643,6 +674,8 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
             "--values", str(CHART / "example.values.yaml"),
             "--set", "management.enabled=true",
             "--set", "supervisor.config.coder-model=chart-coder-model",
+            "--set-json",
+            'supervisor.config.worker-inference-endpoints=[{"url":"http://coder.inference.svc.cluster.local:8000/v1","model":"chart-coder-model"}]',
         ],
         check=True, capture_output=True, text=True,
     )

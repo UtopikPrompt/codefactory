@@ -29,6 +29,9 @@ from prometheus_client import (
 )
 from supervisor_runtime import SupervisorLoop as _SupervisorRuntime
 from task_runtime import (
+    allocate_worker_endpoint as _runtime_allocate_worker_endpoint,
+)
+from task_runtime import (
     claim_queued_task as _claim_queued_task,
 )
 from task_runtime import (
@@ -58,8 +61,13 @@ def task_database(path: str | None = None):
     return _task_database(path or TASK_DB_PATH)
 
 
-def claim_queued_task(db, owner: str, now: float | None = None, lease_seconds: int = 900):
-    return _claim_queued_task(db, owner, now, lease_seconds, MAX_TOTAL_ATTEMPTS)
+def claim_queued_task(db, owner: str, now: float | None = None, lease_seconds: int = 900,
+                      max_active_tasks: int = 2):
+    return _claim_queued_task(db, owner, now, lease_seconds, MAX_TOTAL_ATTEMPTS, max_active_tasks)
+
+
+def _allocate_worker_endpoint(db, task_id: str, owner: str, endpoint_count: int):
+    return _runtime_allocate_worker_endpoint(db, task_id, owner, endpoint_count)
 
 
 def release_task_claim(db, task_id: str, owner: str, requeue: bool = True):

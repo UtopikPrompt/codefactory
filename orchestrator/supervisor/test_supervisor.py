@@ -4,8 +4,6 @@ Unit tests for the supervisor loop helpers (supervisor.py).
 These exercise the pure helper functions and the pick-best / retry decision
 logic, which are deterministic and do not require a running inference server.
 """
-
-
 import asyncio
 import hashlib
 import importlib.util
@@ -143,14 +141,152 @@ def test_durable_claim_recovery_and_eight_total_attempt_cap(tmp_path):
                    ("task", "org/repo", 1, "queued", '{"task_id":"task"}'))
         claimed = claim_queued_task(db, "supervisor-a", now=1000)
         assert claimed["attempts"] == 1 and claimed["claim_owner"] == "supervisor-a"
+        assigned_endpoint = supervisor_module._allocate_worker_endpoint(db, "task", "supervisor-a", 2)
         assert claim_queued_task(db, "supervisor-b", now=1100) is None
         recovered = claim_queued_task(db, "supervisor-b", now=2000, lease_seconds=900)
         assert recovered["attempts"] == 1 and recovered["claim_owner"] == "supervisor-b"
+        assert supervisor_module._allocate_worker_endpoint(db, "task", "supervisor-b", 2) == assigned_endpoint
         db.execute("UPDATE tasks SET status='queued', attempts=8, claimed_at=0 WHERE task_id='task'")
         exhausted = claim_queued_task(db, "supervisor-c", now=4000, lease_seconds=900)
         assert exhausted["status"] == "running" and exhausted["attempts"] == 8
     finally:
         db.close()
+
+
+def test_durable_claims_are_atomic_across_independent_tasks(tmp_path):
+    db_path = str(tmp_path / "parallel-tasks.sqlite3")
+    db = task_database(db_path)
+    db.executemany("INSERT INTO tasks(task_id,status,payload) VALUES(?,?,?)", [
+        ("task-a", "queued", "{}"), ("task-b", "queued", "{}"),
+    ])
+    db.close()
+    barrier = threading.Barrier(2)
+    claims = []
+
+    def claim(owner):
+        connection = task_database(db_path)
+        barrier.wait()
+        row = claim_queued_task(connection, owner, now=1000)
+        claims.append((row["task_id"], row["claim_owner"]))
+        connection.close()
+
+    threads = [threading.Thread(target=claim, args=(owner,)) for owner in ("worker-a", "worker-b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert {task_id for task_id, _owner in claims} == {"task-a", "task-b"}
+    assert len({owner for _task_id, owner in claims}) == 2
+    connection = task_database(db_path)
+    assert claim_queued_task(connection, "worker-c", now=1000, max_active_tasks=2) is None
+    connection.close()
+
+
+def test_parallel_durable_tasks_use_fair_worker_endpoints_and_cpu_judge(monkeypatch, tmp_path):
+    db_path = str(tmp_path / "parallel-runtime.sqlite3")
+    monkeypatch.setenv("SUPERVISOR_WORKER_PARALLELISM", "2")
+    db = task_database(db_path)
+    for task_id in ("task-a", "task-b"):
+        db.execute("""INSERT INTO tasks(task_id,repo,status,payload,plan,config_version,config_hash)
+            VALUES(?,?,?,?,?,?,?)""",
+                   (task_id, "org/repo", "queued", '{"repository_auth":"github-app"}',
+                    "persisted plan", "1", "pinned-hash"))
+    db.close()
+    monkeypatch.setattr(supervisor_module, "task_database", lambda: task_database(db_path))
+    monkeypatch.setattr(supervisor_module, "_load_pinned_catalog", lambda *_args: ({}, {
+        "worker_inference_endpoints": [
+            {"url": "http://gpu-coder/v1", "model": "shared-model"},
+            {"url": "http://gpu-judge/v1", "model": "shared-model"},
+        ],
+        "judge_url": "http://cpu-judge/v1",
+        "threshold": 0.8,
+    }))
+    dispatches = []
+    judge_calls = []
+    both_at_judge = asyncio.Event()
+    allow_judge_results = asyncio.Event()
+
+    def dispatch(task, runtime):
+        dispatches.append((task["task_id"], runtime["coder_url"]))
+        candidate = {"status": "candidate", "attempt": task["attempts"],
+                     "validation": {"status": "passed"}, "patch": "verified", "edits": []}
+        connection = task_database(db_path)
+        connection.execute("UPDATE tasks SET result=? WHERE task_id=?",
+                           (json.dumps(candidate), task["task_id"]))
+        connection.close()
+        return "worker-" + task["task_id"]
+
+    async def judge(task, _candidate, runtime):
+        assert runtime["judge_url"] == "http://cpu-judge/v1"
+        judge_calls.append(task["task_id"])
+        if len(judge_calls) == 2:
+            both_at_judge.set()
+        await allow_judge_results.wait()
+        return 0.95, "Validated candidate."
+
+    def complete(task_id, status, *_args, **_kwargs):
+        connection = task_database(db_path)
+        connection.execute("UPDATE tasks SET status=? WHERE task_id=?", (status, task_id))
+        connection.close()
+
+    monkeypatch.setattr(supervisor_module, "_dispatch_task", dispatch)
+    monkeypatch.setattr(supervisor_module, "_verified_candidate_patch", lambda _task, candidate: candidate)
+    monkeypatch.setattr(supervisor_module, "_judge_candidate", judge)
+    monkeypatch.setattr(supervisor_module, "_publish_candidate", lambda *_args: "https://example.test/pull/1")
+    monkeypatch.setattr(supervisor_module, "_complete_via_gateway", complete)
+    loops = [supervisor_module.SupervisorLoop(), supervisor_module.SupervisorLoop()]
+
+    async def run_two_tasks():
+        processing = asyncio.gather(*(loop.process_next_durable_task() for loop in loops))
+        await asyncio.wait_for(both_at_judge.wait(), timeout=2)
+        assert supervisor_module.ACTIVE_TASKS._value.get() == 2
+        allow_judge_results.set()
+        assert await processing == [True, True]
+
+    asyncio.run(run_two_tasks())
+    assert dispatches == [
+        ("task-a", "http://gpu-coder/v1"),
+        ("task-b", "http://gpu-judge/v1"),
+    ]
+    assert sorted(judge_calls) == ["task-a", "task-b"]
+    assert len(dispatches) == len(judge_calls) == 2
+    assert supervisor_module.ACTIVE_TASKS._value.get() == 0
+    connection = task_database(db_path)
+    assert [row[0] for row in connection.execute("SELECT status FROM tasks ORDER BY task_id")] == [
+        "completed", "completed",
+    ]
+    connection.close()
+
+
+def test_supervisor_shutdown_cancels_active_poll_tasks(monkeypatch):
+    monkeypatch.setenv("SUPERVISOR_WORKER_PARALLELISM", "2")
+    loop = supervisor_module.SupervisorLoop()
+    started = asyncio.Event()
+    cancelled = []
+    start_count = 0
+
+    async def blocked_process():
+        nonlocal start_count
+        start_count += 1
+        if start_count == 2:
+            started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    loop.process_next_durable_task = blocked_process
+
+    async def stop_after_startup():
+        runner = asyncio.create_task(loop.run_forever())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+
+    asyncio.run(stop_after_startup())
+    assert len(cancelled) == 2
 
 
 @pytest.mark.parametrize("gateway_first", [False, True])
@@ -227,7 +363,10 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
         ("task", "queued", original, json.dumps(candidate), "reused plan", "1", "pinned-hash"))
     db.close()
     monkeypatch.setattr(supervisor_module, "task_database", lambda: task_database(path))
-    monkeypatch.setattr(supervisor_module, "_load_pinned_catalog", lambda _task, _db=None: ({}, {"threshold": 0.8}))
+    monkeypatch.setattr(supervisor_module, "_load_pinned_catalog", lambda _task, _db=None: ({}, {
+        "threshold": 0.8,
+        "worker_inference_endpoints": [{"url": "http://coder/v1", "model": "coder-model"}],
+    }))
     planner = AsyncMock(side_effect=AssertionError("Must reuse persisted plan"))
     monkeypatch.setattr(supervisor_module, "_plan_task", planner)
     monkeypatch.setattr(supervisor_module, "_verified_candidate_patch", lambda _task, value: value)
@@ -394,6 +533,7 @@ def test_pinned_catalog_is_schema_validated_and_role_tools_are_bounded(monkeypat
     runtime = json.dumps({"version": "1", "catalog": content,
                           "acceptor_url": "https://gateway", "coder_url": "http://p40-0/v1",
                           "coder_model": "coder-model", "coder_native_download": False,
+                          "worker_inference_endpoints": [{"url": "http://p40-0/v1", "model": "coder-model"}],
                           "judge_url": "http://p40-1/v1", "judge_model": "judge-model",
                           "threshold": 0.8, "max_total_attempts": 8,
                           "allowed_base_branches": "main", "reviewers": "reviewer",
@@ -407,6 +547,40 @@ def test_pinned_catalog_is_schema_validated_and_role_tools_are_bounded(monkeypat
     loaded_catalog, loaded_runtime = supervisor_module._load_pinned_catalog(task)
     assert loaded_catalog["roles"]["coder"]["endpoint_alias"] == "coder"
     assert loaded_runtime["judge_review_margin"] == 0.1
+
+    runtime_document = json.loads(runtime)
+    valid_two_endpoint_runtime = {
+        **runtime_document,
+        "worker_parallelism": 2,
+        "judge_url": "http://cpu-review/v1",
+        "worker_inference_endpoints": [
+            {"url": "http://p40-0/v1", "model": "coder-model"},
+            {"url": "http://p40-1/v1", "model": "coder-model"},
+        ],
+    }
+    invalid_contracts = [
+        {**runtime_document, "worker_parallelism": 3},
+        {**runtime_document, "worker_inference_endpoints": []},
+        {**runtime_document, "worker_inference_endpoints": [
+            {"url": "http://p40-0/v1", "model": "different-model"}]},
+        {**runtime_document, "worker_inference_endpoints": [
+            {"url": "http://p40-0/v1", "model": "coder-model"},
+            {"url": "http://p40-0/v1", "model": "coder-model"}]},
+    ]
+    for runtime_document_to_load in [valid_two_endpoint_runtime, *invalid_contracts]:
+        runtime_text = json.dumps(runtime_document_to_load, sort_keys=True, separators=(",", ":"))
+        runtime_hash = hashlib.sha256((content + schema + runtime_text).encode()).hexdigest()
+        monkeypatch.setattr(supervisor_module, "_k8s_request", lambda *_args, value=runtime_text: {
+            "data": {"agent-roles.yaml": content, "agent-roles.schema.json": schema,
+                     "runtime-config.json": value}})
+        if runtime_document_to_load is valid_two_endpoint_runtime:
+            _, validated_runtime = supervisor_module._load_pinned_catalog(
+                {"config_hash": runtime_hash, "config_version": "1"})
+            assert validated_runtime["worker_parallelism"] == 2
+        else:
+            with pytest.raises(RuntimeError, match="task-runtime-config-invalid"):
+                supervisor_module._load_pinned_catalog(
+                    {"config_hash": runtime_hash, "config_version": "1"})
 
     invalid = content.replace("spec_version: 1", "spec_version: 2")
     monkeypatch.setattr(supervisor_module, "_k8s_request", lambda *_args: {
@@ -424,12 +598,13 @@ def test_pinned_task_loads_its_database_config_revision(tmp_path, monkeypatch):
     catalog = yaml.safe_dump(catalog_doc, sort_keys=False)
     schema = (chart / "agent-catalog.schema.json").read_text()
     runtime = json.dumps({"version": "1-r2", "catalog": catalog,
-                          "acceptor_url": "https://gateway", "coder_url": "http://coder",
+                          "acceptor_url": "https://gateway", "coder_url": "http://coder/v1",
                           "coder_model": "new/coder", "coder_native_download": False,
                           "judge_url": "http://judge", "judge_model": "new/judge",
                           "threshold": 0.8, "max_total_attempts": 8,
                           "allowed_base_branches": "main", "reviewers": "reviewer",
                           "repo_policies": {}, "worker_parallelism": 1,
+                          "worker_inference_endpoints": [{"url": "http://coder/v1", "model": "new/coder"}],
                           "prompts": {"worker": "Prefer concise edits.", "planner": "", "judge": ""}},
                          sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256((catalog + schema + runtime).encode()).hexdigest()

@@ -29,13 +29,18 @@ def task_database(path: str | None = None):
         sync_started REAL NOT NULL DEFAULT 0, credential_ref TEXT, callback_hash TEXT,
         retry_of TEXT, retry_key TEXT, credential_cleanup TEXT NOT NULL DEFAULT 'retained',
         attempts INTEGER NOT NULL DEFAULT 0, claim_owner TEXT, claimed_at REAL,
-        config_version TEXT, config_hash TEXT, plan TEXT, retry_feedback TEXT)""")
+            config_version TEXT, config_hash TEXT, plan TEXT, retry_feedback TEXT,
+            worker_endpoint_index INTEGER)""")
     columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
     for name, declaration in (("attempts", "INTEGER NOT NULL DEFAULT 0"), ("claim_owner", "TEXT"),
                               ("claimed_at", "REAL"), ("config_version", "TEXT"),
-                              ("config_hash", "TEXT"), ("plan", "TEXT"), ("retry_feedback", "TEXT")):
+                              ("config_hash", "TEXT"), ("plan", "TEXT"), ("retry_feedback", "TEXT"),
+                              ("worker_endpoint_index", "INTEGER")):
         if name not in columns:
             db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
+    db.execute("""CREATE TABLE IF NOT EXISTS worker_endpoint_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1), next_index INTEGER NOT NULL)""")
+    db.execute("INSERT OR IGNORE INTO worker_endpoint_state(singleton,next_index) VALUES(1,0)")
     db.execute("""CREATE TABLE IF NOT EXISTS task_events (
         event_id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, created_at REAL NOT NULL,
         attempt INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL,
@@ -175,13 +180,20 @@ def requeue_failed_task(db, task_id, owner, feedback):
 
 
 def claim_queued_task(db, owner: str, now: float | None = None, lease_seconds: int = 900,
-                      max_attempts: int = MAX_TOTAL_ATTEMPTS):
+                      max_attempts: int = MAX_TOTAL_ATTEMPTS, max_active_tasks: int = 2):
+    if type(max_active_tasks) is not int or not 1 <= max_active_tasks <= 2:
+        raise ValueError("worker-parallelism-invalid")
     now = time.time() if now is None else now
     db.execute("BEGIN IMMEDIATE")
     row = db.execute("""SELECT * FROM tasks WHERE status='queued'
         OR (status='running' AND (claimed_at IS NULL OR claimed_at < ?))
-        ORDER BY rowid LIMIT 1""", (now - lease_seconds,)).fetchone()
+        ORDER BY CASE WHEN status='running' THEN 0 ELSE 1 END, rowid LIMIT 1""",
+                     (now - lease_seconds,)).fetchone()
     if row is None:
+        db.commit()
+        return None
+    active = db.execute("SELECT COUNT(*) FROM tasks WHERE status='running'").fetchone()[0]
+    if active - int(row["status"] == "running") >= max_active_tasks:
         db.commit()
         return None
     attempts = row["attempts"] or 0
@@ -194,9 +206,34 @@ def claim_queued_task(db, owner: str, now: float | None = None, lease_seconds: i
     next_attempt = attempts + (1 if row["status"] == "queued" else 0)
     db.execute("UPDATE tasks SET status='running', attempts=?, claim_owner=?, claimed_at=? WHERE task_id=?",
                (next_attempt, owner, now, row["task_id"]))
+    if row["status"] == "queued":
+        db.execute("UPDATE tasks SET worker_endpoint_index=NULL WHERE task_id=?", (row["task_id"],))
     claimed = db.execute("SELECT * FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()
     db.commit()
     return claimed
+
+
+def allocate_worker_endpoint(db, task_id: str, owner: str, endpoint_count: int):
+    if type(endpoint_count) is not int or not 1 <= endpoint_count <= 2:
+        raise ValueError("worker-endpoint-pool-invalid")
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        task = db.execute("SELECT claim_owner,worker_endpoint_index FROM tasks WHERE task_id=?",
+                          (task_id,)).fetchone()
+        if task is None or task["claim_owner"] != owner:
+            raise RuntimeError("task-claim-lost")
+        if task["worker_endpoint_index"] is None:
+            next_index = db.execute("SELECT next_index FROM worker_endpoint_state WHERE singleton=1").fetchone()[0]
+            db.execute("UPDATE worker_endpoint_state SET next_index=? WHERE singleton=1", (next_index + 1,))
+            db.execute("UPDATE tasks SET worker_endpoint_index=? WHERE task_id=? AND claim_owner=?",
+                       (next_index, task_id, owner))
+        else:
+            next_index = task["worker_endpoint_index"]
+        db.commit()
+        return next_index % endpoint_count
+    except Exception:
+        db.rollback()
+        raise
 
 
 def release_task_claim(db, task_id: str, owner: str, requeue: bool = True):
@@ -244,13 +281,31 @@ def load_pinned_catalog(task, k8s_request, db=None):
     runtime = json.loads(runtime_content)
     required = {"acceptor_url", "coder_url", "coder_model", "coder_native_download", "judge_url", "judge_model",
                 "threshold", "max_total_attempts", "allowed_base_branches", "reviewers",
-                "repo_policies", "worker_parallelism"}
+                "repo_policies", "worker_parallelism", "worker_inference_endpoints"}
     if (not isinstance(runtime, dict) or not required <= runtime.keys()
             or runtime.get("version") != task["config_version"] or runtime.get("catalog") != content
             or runtime.get("max_total_attempts") != MAX_TOTAL_ATTEMPTS
             or type(runtime.get("threshold")) not in (float, int)
             or not 0 <= runtime["threshold"] <= 1
-            or runtime.get("worker_parallelism") != 1):
+            or type(runtime.get("worker_parallelism")) is not int
+            or not 1 <= runtime["worker_parallelism"] <= 2):
+        raise RuntimeError("task-runtime-config-invalid")
+    worker_endpoints = runtime["worker_inference_endpoints"]
+    if not isinstance(worker_endpoints, list) or len(worker_endpoints) not in (1, 2):
+        raise RuntimeError("task-runtime-config-invalid")
+    endpoint_urls = []
+    for endpoint in worker_endpoints:
+        if (not isinstance(endpoint, dict) or set(endpoint) != {"url", "model"}
+                or endpoint.get("model") != runtime["coder_model"]):
+            raise RuntimeError("task-runtime-config-invalid")
+        endpoint_url = endpoint["url"]
+        parsed = urllib.parse.urlsplit(endpoint_url)
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password
+                or parsed.path != "/v1" or parsed.query or parsed.fragment
+                or endpoint_url == runtime["judge_url"] or endpoint_url in endpoint_urls):
+            raise RuntimeError("task-runtime-config-invalid")
+        endpoint_urls.append(endpoint_url)
+    if runtime["coder_url"] not in endpoint_urls or runtime["worker_parallelism"] > len(endpoint_urls):
         raise RuntimeError("task-runtime-config-invalid")
     review_margin = runtime.get("judge_review_margin", 0.1)
     if type(review_margin) not in (float, int) or not 0 <= review_margin <= 1:

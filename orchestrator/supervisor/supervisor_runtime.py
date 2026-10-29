@@ -30,7 +30,6 @@ class SupervisorLoop:
         status = state.get("status", "unknown")
         supervisor.TASKS.labels(status=status).inc()
         supervisor.ITERATIONS.inc(state.get("iteration", 1))
-        supervisor.ACTIVE_TASKS.set(0)
         if state.get("best_output"):
             supervisor.BEST_SCORE.set(state["best_output"].get("score", 0.0))
         supervisor.SUPERVISOR_STATE.set(self._state_to_value(status))
@@ -48,23 +47,30 @@ class SupervisorLoop:
     async def run_task(self, task):
         supervisor = self.supervisor
         start_time = asyncio.get_running_loop().time()
-        supervisor.ACTIVE_TASKS.set(1)
+        supervisor.ACTIVE_TASKS.inc()
         supervisor.SUPERVISOR_STATE.set(self._state_to_value("planning"))
-        result = await self.graph.ainvoke(task)
-        self._record_task_metrics(result, start_time)
-        return result
+        try:
+            result = await self.graph.ainvoke(task)
+            self._record_task_metrics(result, start_time)
+            return result
+        finally:
+            supervisor.ACTIVE_TASKS.dec()
 
     async def process_next_durable_task(self):
         supervisor = self.supervisor
-        owner = supervisor.os.environ.get("SUPERVISOR_INSTANCE_ID", str(uuid.uuid4()))
+        instance_id = supervisor.os.environ.get("SUPERVISOR_INSTANCE_ID", "supervisor")
+        owner = f"{instance_id}:{uuid.uuid4()}"
+        max_active_tasks = int(supervisor.os.getenv("SUPERVISOR_WORKER_PARALLELISM", "1"))
+        if not 1 <= max_active_tasks <= 2:
+            raise ValueError("worker-parallelism-invalid")
         db = supervisor.task_database()
-        task = supervisor.claim_queued_task(db, owner)
+        task = supervisor.claim_queued_task(db, owner, max_active_tasks=max_active_tasks)
         if task is None:
             db.close()
             return False
         task_id = task["task_id"]
         started_at = time.monotonic()
-        supervisor.ACTIVE_TASKS.set(1)
+        supervisor.ACTIVE_TASKS.inc()
         record_task_event(db, task_id, task["attempts"] or 1, "supervisor", "claim", "started")
         runtime = None
         failure_stage = "supervisor"
@@ -87,7 +93,12 @@ class SupervisorLoop:
             if task["result"]:
                 candidate = json.loads(task["result"])
             else:
-                job_name = supervisor._dispatch_task(task, runtime)
+                endpoints = runtime["worker_inference_endpoints"]
+                endpoint_index = supervisor._allocate_worker_endpoint(db, task_id, owner, len(endpoints))
+                endpoint = endpoints[endpoint_index]
+                worker_runtime = dict(runtime)
+                worker_runtime["coder_url"] = endpoint["url"]
+                job_name = supervisor._dispatch_task(task, worker_runtime)
                 db.execute("UPDATE tasks SET job=? WHERE task_id=? AND claim_owner=?",
                            (json.dumps({"name": job_name}), task_id, owner))
                 record_task_event(db, task_id, task["attempts"], "supervisor", "dispatch", "dispatched")
@@ -100,6 +111,8 @@ class SupervisorLoop:
                     if current["result"]:
                         candidate = json.loads(current["result"])
                         break
+                    db.execute("UPDATE tasks SET claimed_at=? WHERE task_id=? AND claim_owner=?",
+                               (time.time(), task_id, owner))
                     await asyncio.sleep(float(supervisor.os.environ.get("TASK_POLL_SECONDS", "5")))
                 if candidate is None:
                     raise RuntimeError("worker-result-timeout")
@@ -181,21 +194,46 @@ class SupervisorLoop:
                     outcome = "success" if current["status"] == "completed" else "failure"
                     supervisor.AGENT_TASKS.labels(role="coder", outcome=outcome).inc()
             finally:
-                supervisor.ACTIVE_TASKS.set(0)
+                supervisor.ACTIVE_TASKS.dec()
                 db.close()
         return True
 
     async def run_forever(self):
         supervisor = self.supervisor
         interval_seconds = int(supervisor.os.getenv("SUPERVISOR_IDLE_SLEEP_SECONDS", "15"))
+        parallelism = int(supervisor.os.getenv("SUPERVISOR_WORKER_PARALLELISM", "1"))
+        if not 1 <= parallelism <= 2:
+            raise ValueError("worker-parallelism-invalid")
         supervisor.SUPERVISOR_STATE.set(self._state_to_value("idle"))
         supervisor.logger.info("Supervisor durable task polling started.")
-        while True:
-            try:
-                did_work = await self.process_next_durable_task()
-            except Exception:
-                supervisor.logger.exception("durable task poll failed")
-                supervisor.SUPERVISOR_STATE.set(self._state_to_value("idle"))
-                did_work = False
-            if not did_work:
-                await asyncio.sleep(interval_seconds)
+        active_tasks = set()
+        try:
+            while True:
+                while len(active_tasks) < parallelism:
+                    task = asyncio.create_task(self.process_next_durable_task())
+                    active_tasks.add(task)
+                    await asyncio.sleep(0)
+                    if task.done():
+                        active_tasks.remove(task)
+                        try:
+                            did_work = task.result()
+                        except Exception:
+                            supervisor.logger.exception("durable task poll failed")
+                            did_work = False
+                        if not did_work:
+                            break
+                if active_tasks:
+                    completed, _ = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for task in completed:
+                        active_tasks.remove(task)
+                        try:
+                            task.result()
+                        except Exception:
+                            supervisor.logger.exception("durable task poll failed")
+                else:
+                    await asyncio.sleep(interval_seconds)
+        finally:
+            for task in active_tasks:
+                task.cancel()
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)

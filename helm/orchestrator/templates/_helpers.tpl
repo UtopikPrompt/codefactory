@@ -8,6 +8,27 @@
 {{- if kindIs "bool" .Values.worker.judgeNativeDownload -}}
 {{- $judgeNative = .Values.worker.judgeNativeDownload -}}
 {{- end -}}
+{{- $runtimeConfig := .Values.supervisor.config -}}
+{{- $workerEndpoints := index $runtimeConfig "worker-inference-endpoints" -}}
+{{- $workerParallelism := int (index $runtimeConfig "worker-parallelism") -}}
+{{- if gt $workerParallelism (len $workerEndpoints) -}}
+{{- fail "supervisor.config.worker-parallelism cannot exceed worker-inference-endpoints count" -}}
+{{- end -}}
+{{- $coderUrlConfigured := false -}}
+{{- range $endpoint := $workerEndpoints -}}
+{{- if eq (index $endpoint "url") $coderUrl -}}
+{{- $coderUrlConfigured = true -}}
+{{- end -}}
+{{- if ne (index $endpoint "model") (index $runtimeConfig "coder-model") -}}
+{{- fail "worker-inference-endpoints model aliases must match supervisor.config.coder-model" -}}
+{{- end -}}
+{{- if eq (index $endpoint "url") (index $runtimeConfig "judge-url") -}}
+{{- fail "worker-inference-endpoints must remain separate from the judge review URL" -}}
+{{- end -}}
+{{- end -}}
+{{- if not $coderUrlConfigured -}}
+{{- fail "worker-inference-endpoints must include the effective coder URL" -}}
+{{- end -}}
 {{- $config := dict
 	"catalog" (.Files.Get "files/agent-catalog.yaml")
 	"version" (.Values.agentCatalog.version | default "1")
@@ -15,6 +36,7 @@
 	"acceptor_url" (index .Values.supervisor.config "acceptor-url")
 	"coder_url" $coderUrl
 	"coder_native_download" $coderNative
+	"worker_inference_endpoints" (index .Values.supervisor.config "worker-inference-endpoints")
 	"judge_url" (index .Values.supervisor.config "judge-url")
 	"judge_native_download" $judgeNative
 	"coder_model" (index .Values.supervisor.config "coder-model")

@@ -91,6 +91,8 @@ spec:
                 configMapKeyRef:
                   name: {{ .Chart.Name }}-config
                   key: coder-model
+            - name: SUPERVISOR_WORKER_PARALLELISM
+              value: {{ index .Values.supervisor.config "worker-parallelism" | quote }}
             - name: ACCEPTANCE_THRESHOLD
               value: {{ index .Values.supervisor.config "acceptance-threshold" | default 0.8 | quote }}
             - name: PR_ALLOWED_BASE_BRANCHES
