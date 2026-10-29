@@ -11,6 +11,15 @@ export interface Task {
     config_version?: string | null
     config_hash?: string | null
     pr_url?: string | null
+    coordination?: {
+        plan_recorded: boolean
+        judge_score: number | null
+        latest_feedback: {
+            stage: 'supervisor' | 'worker' | 'judge'
+            attempt: number
+            review_topics: string[]
+        } | null
+    }
     execution?: {
         job_name: string | null
         worker_status: 'candidate' | 'candidate_failed' | null

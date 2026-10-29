@@ -239,6 +239,27 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
             "report_failed": result.get("report_failed") is True,
         }
 
+    def task_coordination(data):
+        stored = data.get("coordination")
+        stored = stored if isinstance(stored, dict) else {}
+        feedback = stored.get("latest_feedback")
+        safe_feedback = None
+        if (isinstance(feedback, dict) and feedback.get("stage") in ("supervisor", "worker", "judge")
+                and type(feedback.get("attempt")) is int and 1 <= feedback["attempt"] <= 8):
+            topics = feedback.get("review_topics")
+            safe_feedback = {
+                "stage": feedback["stage"], "attempt": feedback["attempt"],
+                "review_topics": [topic for topic in ("tests", "correctness", "security", "scope", "patch-integrity")
+                                  if isinstance(topics, list) and topic in topics],
+            }
+        result = data.get("result")
+        score = result.get("score") if isinstance(result, dict) else None
+        return {
+            "plan_recorded": stored.get("plan_recorded") is True,
+            "latest_feedback": safe_feedback,
+            "judge_score": score if type(score) in (int, float) and 0 <= score <= 1 else None,
+        }
+
     @app.get("/healthz")
     def health():
         return {"status": "ok"}
@@ -266,6 +287,7 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
         _, data = await gateway("GET", "/api/v1/tasks/" + task_id)
         summary = task_summary(data)
         summary["execution"] = task_execution(data)
+        summary["coordination"] = task_coordination(data)
         result = data.get("result")
         pr_url = result.get("pr_url") if isinstance(result, dict) else None
         repo = data.get("repo")

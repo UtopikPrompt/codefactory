@@ -504,6 +504,77 @@ tr.selected td {
     gap: 24px;
 }
 
+.interactions {
+    margin-bottom: 24px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.interaction-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.interactions h3,
+.interactions h4 {
+    margin: 0;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.interactions p {
+    margin-top: 8px;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.interaction-note {
+    color: var(--muted);
+}
+
+.interaction-empty {
+    padding: 12px;
+    background: #edf1f0;
+}
+
+.interaction-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+    gap: 12px;
+    padding: 0;
+    margin: 16px 0;
+    list-style: none;
+}
+
+.interaction-grid li {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--accent);
+    border-radius: 4px;
+    background: var(--surface);
+}
+
+.interaction-grid strong {
+    display: block;
+    margin-top: 12px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.interaction-feedback,
+.interaction-outcome {
+    padding: 12px 14px;
+    border-left: 3px solid var(--border);
+    background: #edf1f0;
+    margin-top: 12px;
+}
+
 .detail-section {
     min-width: 0;
 }

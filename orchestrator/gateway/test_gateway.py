@@ -107,6 +107,27 @@ def issue_payload(repo="org/repo"):
     return {"name": "drain", "ref": "refs/heads/main", "payload": {"repo": repo, "issue_number": 2}}
 
 
+def test_task_detail_exposes_only_safe_coordination_records(task_gateway):
+    code, body = task_request("POST", "/api/v1/tasks/spawn", {"repo": "org/repo", "issue_number": 2})
+    assert code == 202
+    task_id = body["task_id"]
+    db = server._task_db()
+    try:
+        db.execute("UPDATE tasks SET plan=?, retry_feedback=? WHERE task_id=?", (
+            "private plan", json.dumps({"stage": "judge", "attempt": 1, "review_topics": ["tests", "secret"],
+                                        "review": "secret review"}), task_id,
+        ))
+        db.commit()
+    finally:
+        db.close()
+    code, detail = task_request("GET", f"/api/v1/tasks/{task_id}")
+    assert code == 200
+    assert detail["coordination"] == {"plan_recorded": True, "latest_feedback": {
+        "stage": "judge", "attempt": 1, "review_topics": ["tests"],
+    }}
+    assert "private plan" not in json.dumps(detail) and "secret review" not in json.dumps(detail)
+
+
 @pytest.fixture
 def workflow_identity(monkeypatch):
     for key, value in {
@@ -397,11 +418,12 @@ def finish_failed_task(task_gateway, monkeypatch, task_id):
 
 def test_retry_preserves_history_and_uses_new_credentials(task_gateway, monkeypatch):
     original = task_request("POST", "/api/v1/tasks/spawn", issue_payload())[1]["task_id"]
-    previous = finish_failed_task(task_gateway, monkeypatch, original)
+    finish_failed_task(task_gateway, monkeypatch, original)
     feedback = '{"stage":"judge","reason":"judge-rejected","attempt":8,"review_topics":["tests"]}'
     db = server._task_db()
     db.execute("UPDATE tasks SET retry_feedback=? WHERE task_id=?", (feedback, original))
     db.close()
+    previous = task_request("GET", f"/api/v1/tasks/{original}")[1]
     monkeypatch.setattr(server.secrets, "token_urlsafe", Mock(return_value="new-callback-test-only"))
     code, retried = task_request("POST", f"/api/v1/tasks/{original}/retry", {"retry_key": "manual-1"})
     assert code == 202 and retried["task_id"] != original

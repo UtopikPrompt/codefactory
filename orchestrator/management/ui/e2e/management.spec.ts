@@ -4,7 +4,8 @@ const task = {
     task_id: 'issue-12345678901234567890123456789012', repo: 'example/verified-repository',
     issue_number: 128, status: 'completed', attempts: 2, lifecycle: 'synced', credential_cleanup: 'deleted',
     config_version: '1', config_hash: 'a'.repeat(64), pr_url: 'https://github.com/example/verified-repository/pull/129',
-    execution: { job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false }
+    execution: { job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false },
+    coordination: { plan_recorded: true, judge_score: 0.9, latest_feedback: { stage: 'judge', attempt: 1, review_topics: ['tests', 'correctness'] } }
 }
 const config = {
     version: '1', hash: 'a'.repeat(64), source: 'Git/Helm',
@@ -29,8 +30,13 @@ test('tasks, detail, submission and read-only views fit the viewport', async ({ 
         await route.fulfill({ json: body })
     })
     await page.goto('/')
-    await page.getByRole('link', { name: `Open task ${task.task_id}` }).click()
+    await page.getByRole('link', { name: task.task_id, exact: true }).click()
     await expect(page.getByRole('link', { name: 'Human review' })).toBeVisible()
+    const interactions = page.getByRole('region', { name: 'Agent interactions' })
+    await expect(interactions).toBeVisible()
+    await expect(interactions.getByText('Worker job recorded', { exact: true })).toBeVisible()
+    await expect(interactions.getByText('Recorded score: 0.90 / 1')).toBeVisible()
+    await expect(interactions.getByText('Review topics: tests, correctness')).toBeVisible()
     await expect(page.getByRole('button', { name: `Collapse task ${task.task_id}` })).toHaveAttribute('aria-expanded', 'true')
     await expect(page.locator('.detail-row')).toBeVisible()
     await page.evaluate(() => document.fonts.ready)
@@ -38,7 +44,7 @@ test('tasks, detail, submission and read-only views fit the viewport', async ({ 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     await page.screenshot({ path: testInfo.outputPath('tasks-detail.png'), fullPage: true })
     await page.getByRole('button', { name: 'New task' }).click()
-    await page.getByLabel('Repository', { exact: true }).selectOption(task.repo)
+    await page.getByRole('dialog').getByLabel('Repository', { exact: true }).selectOption(task.repo)
     await page.getByLabel('Issue number').fill('128')
     await expect(page.getByRole('dialog')).toBeVisible()
     expect(await page.getByRole('dialog').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
@@ -80,6 +86,33 @@ test('failed task details expand beneath the task row and can be collapsed', asy
     await expect(page.locator('.detail-row')).toBeVisible()
     await page.getByRole('button', { name: `Collapse task ${failedTask.task_id}` }).click()
     await expect(detail).toHaveCount(0)
+})
+
+test('interaction snapshot updates on polling without inventing a current judge call', async ({ page }) => {
+    await page.clock.install()
+    let currentTask: unknown = { ...task, status: 'queued', attempts: 0, execution: undefined, coordination: undefined, pr_url: null }
+    await page.route('**/management/api/**', async route => {
+        const url = new URL(route.request().url())
+        await route.fulfill({ json: url.pathname.endsWith('/session') ? { subject: 'test-operator' }
+            : url.pathname.endsWith(`/${task.task_id}`) ? currentTask
+                : { tasks: [currentTask], total: 1, limit: 25, offset: 0 } })
+    })
+    await page.goto('/')
+    await page.getByRole('button', { name: `Expand task ${task.task_id}` }).click()
+    const interactions = page.getByRole('region', { name: 'Agent interactions' })
+    await expect(interactions.getByText(/No agent interactions recorded yet/)).toBeVisible()
+    currentTask = {
+        ...task, status: 'running', attempts: 1, pr_url: null,
+        coordination: { plan_recorded: true, judge_score: null, latest_feedback: null },
+    }
+    await page.clock.fastForward(10_000)
+    await expect(interactions.getByText('Candidate returned', { exact: true })).toBeVisible()
+    await expect(interactions.getByText('No judge score retained', { exact: true })).toBeVisible()
+    currentTask = { ...task, execution: undefined }
+    await page.clock.fastForward(10_000)
+    await expect(interactions.getByText('Recorded score: 0.90 / 1')).toBeVisible()
+    await expect(interactions.getByText('No worker result retained')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Human review' })).toBeVisible()
 })
 
 test('access denied state never renders task controls', async ({ page }, testInfo) => {

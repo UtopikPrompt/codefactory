@@ -1,5 +1,25 @@
 """Task intake, callback, retry, and status operations for the gateway."""
 
+import json
+
+
+def coordination_summary(task):
+    """Expose bounded facts, never plan text or free-form retry/model feedback."""
+    feedback = None
+    try:
+        stored = json.loads(task["retry_feedback"] or "null")
+    except (ValueError, TypeError):
+        stored = None
+    if (isinstance(stored, dict) and stored.get("stage") in ("supervisor", "worker", "judge")
+            and type(stored.get("attempt")) is int and 1 <= stored["attempt"] <= 8):
+        topics = stored.get("review_topics")
+        feedback = {
+            "stage": stored["stage"], "attempt": stored["attempt"],
+            "review_topics": [topic for topic in ("tests", "correctness", "security", "scope", "patch-integrity")
+                              if isinstance(topics, list) and topic in topics],
+        }
+    return {"plan_recorded": bool(task["plan"]), "latest_feedback": feedback}
+
 
 class TaskAPI:
     def __init__(self, handler, gateway):
@@ -76,6 +96,7 @@ class TaskAPI:
                 "retry_task_id": next((row[0] for row in db.execute(
                     "SELECT task_id FROM tasks WHERE retry_of=?", (task["task_id"],))), None),
                 "job": gateway.json.loads(task["job"]) if task["job"] else None,
+                "coordination": coordination_summary(task),
             })
         except PermissionError:
             handler._json(403, {"error": "repository-mismatch"})

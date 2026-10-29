@@ -5,6 +5,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { Activity, ArrowLeft, ArrowRight, Bot, Check, ChevronRight, CircuitBoard, ExternalLink, GitPullRequest, ListTodo, LoaderCircle, LockKeyhole, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { api, ApiError } from './api'
 import type { Config, Task, TaskPage } from './api'
+import Interactions from './Interactions'
 
 function subscribeRoute(callback: () => void) {
     window.addEventListener('hashchange', callback)
@@ -83,6 +84,7 @@ function TaskDetail({ taskId }: { taskId: string }) {
     return <section id={`task-detail-${taskId}`} className="task-detail" aria-label={`Task detail for ${taskId}`}>
         <div className="detail-heading"><div><span className="eyebrow">Task detail</span><h2 className="task-identifier">{taskId}</h2></div><a className="icon-button" href="#/tasks" aria-label="Collapse task detail" title="Collapse task detail"><X /></a></div>
         {query.isPending || query.isError || !task ? <QueryState loading={query.isPending} error={query.error} retry={() => { void query.refetch() }} /> : <>
+            <Interactions task={task} />
             <div className="detail-grid">
                 <section className="detail-section" aria-labelledby={`execution-heading-${taskId}`}>
                     <h3 id={`execution-heading-${taskId}`}>Execution steps</h3>

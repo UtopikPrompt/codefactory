@@ -8,13 +8,14 @@ const task = { task_id: 'task-1', repo: 'org/repo', issue_number: 7, status: 'qu
 let calls: [string, RequestInit | undefined][]
 let taskResponse: unknown
 let taskDetailResponse: unknown
+let detailStatus = 200
 let status = 200
 let repositories: string[]
 let connected = true
 
 beforeEach(() => {
     window.location.hash = '/tasks'
-    calls = []; status = 200; repositories = ['org/repo']; connected = true; taskResponse = { tasks: [task], total: 1, limit: 25, offset: 0 }
+    calls = []; status = 200; detailStatus = 200; repositories = ['org/repo']; connected = true; taskResponse = { tasks: [task], total: 1, limit: 25, offset: 0 }
     taskDetailResponse = {
         ...task, status: 'completed', pr_url: 'https://github.com/org/repo/pull/8', execution: {
             job_name: 'worker-job-1', worker_status: 'candidate', validation_status: 'passed', error: null, report_failed: false
@@ -26,7 +27,7 @@ beforeEach(() => {
             : url.endsWith('/session') ? { subject: 'operator' } : url.endsWith('/repositories') ? { repositories }
                 : options?.method === 'POST' ? task : url.includes('/tasks/task-1') ? taskDetailResponse
                     : url.includes('/config') ? { version: '1', hash: 'abc', models: [{ role: 'coder', model: 'verified-model', native_download: true, availability: 'unknown' }], agents: [] } : taskResponse
-        return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+        return new Response(JSON.stringify(body), { status: url.includes('/tasks/task-1') ? detailStatus : status, headers: { 'Content-Type': 'application/json' } })
     }))
 })
 afterEach(() => vi.unstubAllGlobals())
@@ -83,6 +84,19 @@ test('submits only repository and issue', async () => {
     expect(JSON.parse(post[1]!.body as string)).toEqual({ repo: 'org/repo', issue_number: 7 })
     expect(post[1]!.headers).not.toHaveProperty('Authorization')
     expect(post[1]!.headers).toHaveProperty('X-Management-Request', '1')
+})
+
+test('interaction details recover from an API error without presenting fabricated activity', async () => {
+    detailStatus = 502
+    const user = userEvent.setup()
+    mount()
+    await user.click(await screen.findByRole('button', { name: 'Expand task task-1' }))
+    const detail = await screen.findByRole('region', { name: 'Task detail for task-1' })
+    expect(await within(detail).findByRole('alert')).toHaveTextContent('Request failed. Try again.')
+    expect(within(detail).queryByRole('heading', { name: 'Agent interactions' })).not.toBeInTheDocument()
+    detailStatus = 200
+    await user.click(within(detail).getByRole('button', { name: 'Retry' }))
+    expect(await within(detail).findByRole('heading', { name: 'Agent interactions' })).toBeInTheDocument()
 })
 
 test('has honest empty and read-only model states', async () => {

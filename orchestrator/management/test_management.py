@@ -200,6 +200,7 @@ def test_admin_operations_without_repository_access(boundary, tmp_path, reposito
             "error": None,
             "report_failed": False,
         },
+        "coordination": {"plan_recorded": False, "latest_feedback": None, "judge_score": None},
         "pr_url": None,
     }
     upstream.reset_mock()
@@ -407,6 +408,48 @@ def test_listing_and_upstream_failures(boundary):
     assert client.get("/management/api/tasks/task-1").status_code == 502
 
 
+def test_coordination_summary_allowlists_feedback_and_review_score(boundary):
+    client, upstream, _, _ = boundary
+    upstream.return_value = httpx.Response(200, json={
+        "task_id": "task-1", "status": "completed",
+        "coordination": {"plan_recorded": True, "plan": "private",
+                         "latest_feedback": {"stage": "judge", "attempt": 2, "reason": "private",
+                                             "review_topics": ["tests", "private", "security", "tests"],
+                                             "review": "secret"}},
+        "result": {"score": 0.75, "review": "secret", "patch": "private"},
+    })
+    response = client.get("/management/api/tasks/task-1")
+    assert response.json()["coordination"] == {
+        "plan_recorded": True, "judge_score": 0.75,
+        "latest_feedback": {"stage": "judge", "attempt": 2, "review_topics": ["tests", "security"]},
+    }
+    assert "secret" not in response.text and "private" not in response.text
+
+
+@pytest.mark.parametrize("coordination,score", [
+    (None, None), ({}, "0.9"), ([], True),
+    ({"plan_recorded": "secret", "latest_feedback": []}, -1),
+    ({"latest_feedback": {"stage": "secret", "attempt": 1}}, 2),
+    ({"latest_feedback": {"stage": "judge", "attempt": True}}, None),
+    ({"latest_feedback": {"stage": "judge", "attempt": 9}}, None),
+])
+def test_coordination_summary_handles_missing_and_invalid_records(boundary, coordination, score):
+    client, upstream, _, _ = boundary
+    upstream.return_value = httpx.Response(200, json={
+        "task_id": "task-1", "coordination": coordination, "result": {"score": score},
+    })
+    assert client.get("/management/api/tasks/task-1").json()["coordination"] == {
+        "plan_recorded": False, "latest_feedback": None, "judge_score": None,
+    }
+
+
+@pytest.mark.parametrize("score", [0, 1])
+def test_judge_score_accepts_range_boundaries(boundary, score):
+    client, upstream, _, _ = boundary
+    upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "result": {"score": score}})
+    assert client.get("/management/api/tasks/task-1").json()["coordination"]["judge_score"] == score
+
+
 def test_no_configuration_or_deployment_mutations(boundary):
     client, upstream, _, _ = boundary
     for path in ("/management/api/config", "/management/api/deploy", "/management/api/tasks/task-1/retry"):
@@ -471,6 +514,21 @@ def test_adapter_to_real_gateway_contract(boundary, monkeypatch, tmp_path, auth_
         task_id = accepted.json()["task_id"]
         assert client.get("/management/api/tasks").json()["tasks"][0]["task_id"] == task_id
         assert client.get("/management/api/tasks/" + task_id).json()["issue_number"] == 7
+        db = gateway._task_db()
+        try:
+            db.execute("UPDATE tasks SET plan=?, retry_feedback=? WHERE task_id=?", (
+                "private plan", json.dumps({"stage": "judge", "attempt": 1,
+                                            "review_topics": ["tests"], "review": "secret review"}), task_id,
+            ))
+            db.commit()
+        finally:
+            db.close()
+        detail = client.get("/management/api/tasks/" + task_id)
+        assert detail.json()["coordination"] == {
+            "plan_recorded": True, "judge_score": None,
+            "latest_feedback": {"stage": "judge", "attempt": 1, "review_topics": ["tests"]},
+        }
+        assert "private plan" not in detail.text and "secret review" not in detail.text
         assert client.post("/management/api/tasks", json={"repo": "org/repo", "issue_number": 7}).json()["task_id"] == task_id
         gateway._validate_repository.assert_called_with("org/repo", 7, "repository-test-secret")
     finally:
