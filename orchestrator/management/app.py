@@ -261,6 +261,25 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
         }
 
 
+    def safe_failure_details(details):
+        allowed_codes = {
+            "validation": {"nonzero-exit"},
+            "execution": {"timeout", "os-error", "json-error", "http-error", "unexpected"},
+        }
+        if not isinstance(details, dict):
+            return None
+        stage, code = details.get("stage"), details.get("code")
+        if (not isinstance(stage, str) or not isinstance(code, str)
+                or stage not in allowed_codes or code not in allowed_codes[stage]):
+            return None
+        safe = {"stage": stage, "code": code}
+        for key, maximum in (("exit_status", 255), ("duration_ms", 600000), ("output_bytes", 65536)):
+            value = details.get(key)
+            minimum = -maximum if key == "exit_status" else 0
+            if type(value) is int and minimum <= value <= maximum:
+                safe[key] = value
+        return safe
+
     def task_events(data):
         events = data.get("events")
         if not isinstance(events, list):
@@ -302,6 +321,7 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
                 "score": event.get("score") if type(event.get("score")) in (int, float) and 0 <= event["score"] <= 1 else None,
                 "review_topics": [topic for topic in topics if isinstance(event.get("review_topics"), list)
                                   and topic in event["review_topics"]],
+                "failure_details": safe_failure_details(event.get("failure_details")),
             })
         return safe_events
 

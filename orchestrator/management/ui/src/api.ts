@@ -29,6 +29,14 @@ export interface Task {
         report_failed: boolean
     }
 }
+export type FailureDetails = (
+    | { stage: 'validation'; code: 'nonzero-exit' }
+    | { stage: 'execution'; code: 'timeout' | 'os-error' | 'json-error' | 'http-error' | 'unexpected' }
+) & {
+    exit_status?: number
+    duration_ms?: number
+    output_bytes?: number
+}
 export interface OperationalEvent {
     timestamp: number
     attempt: number
@@ -39,6 +47,7 @@ export interface OperationalEvent {
     validation_status: 'passed' | 'failed' | 'not-run' | null
     score: number | null
     review_topics: string[]
+    failure_details: FailureDetails | null
 }
 export interface TaskPage { tasks: Task[]; total: number; limit: number; offset: number }
 export interface Config {

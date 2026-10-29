@@ -410,6 +410,27 @@ def test_assigned_issue_reports_unsupported_discovery(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.parametrize(("failure", "expected_code"), [
+    (TimeoutError("private source and secret-token"), "timeout"),
+    (RuntimeError("private source and secret-token"), "unexpected"),
+])
+def test_assigned_generic_failure_reports_only_safe_category(monkeypatch, tmp_path, caplog, failure, expected_code):
+    monkeypatch.setenv("TASK_WORK_DIR", str(tmp_path))
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(200, json={"task_id": "2", "status": "candidate_failed"})
+    monkeypatch.setattr(worker, "_implement_issue", AsyncMock(side_effect=failure))
+    payload = {"repo": "org/repo", "issue_number": 2}
+
+    result = asyncio.run(worker._run_worker(client, "https://acceptor", "worker", payload, "2"))
+
+    assert result["error"] == "task-execution-failed"
+    assert result["failure_details"] == {"stage": "execution", "code": expected_code}
+    reported = client.post.call_args.kwargs["json"]
+    assert reported["failure_details"] == result["failure_details"]
+    assert "private source" not in json.dumps(result) and "secret-token" not in json.dumps(result)
+    assert "private source" not in caplog.text and "secret-token" not in caplog.text
+
+
 def test_worker_contract_is_candidate_only_and_github_is_read_only(monkeypatch):
     assert not hasattr(worker, "judge_review")
     assert not hasattr(worker, "_publish")
@@ -869,6 +890,13 @@ def test_validation_runner_is_fixed_sandboxed_and_bounded(monkeypatch, outcome):
     policy = {"validation_argv": ["/usr/local/bin/python", "-m", "pytest", "tests/test_small.py"], "validation_timeout": 1}
     if outcome == "success":
         assert asyncio.run(worker._run_validation("/task/workspace", policy)) == "passed"
+    elif outcome == "failed":
+        with pytest.raises(worker.TaskFailure, match="^validation-failed$") as failure:
+            asyncio.run(worker._run_validation("/task/workspace", policy))
+        details = failure.value.failure_details
+        assert details["stage"] == "validation" and details["code"] == "nonzero-exit"
+        assert details["exit_status"] == 1 and details["output_bytes"] == len(b"passed")
+        assert type(details["duration_ms"]) is int and 0 <= details["duration_ms"] <= 600000
     else:
         with pytest.raises((worker.TaskFailure, asyncio.TimeoutError)):
             asyncio.run(worker._run_validation("/task/workspace", policy))

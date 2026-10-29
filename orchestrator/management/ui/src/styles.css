@@ -391,6 +391,12 @@ tr.selected td {
     background: #f7f9f8;
 }
 
+.task-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .task-link {
     display: block;
     font-weight: 500;
@@ -399,6 +405,37 @@ tr.selected td {
 
 .task-link:hover {
     text-decoration: underline;
+}
+
+.copy-task {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    border: 0;
+    border-radius: 4px;
+    color: var(--muted);
+    background: transparent;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.copy-task:hover,
+.copy-task:focus-visible {
+    color: var(--text);
+    background: #eef2f0;
+}
+
+.copy-task svg {
+    width: 14px;
+    height: 14px;
+}
+
+.copy-status {
+    margin: 8px 0 0;
+    color: var(--muted);
+    font-size: 12px;
 }
 
 .repository-name {

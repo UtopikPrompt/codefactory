@@ -1,4 +1,4 @@
-import type { OperationalEvent, Task } from './api'
+import type { FailureDetails, OperationalEvent, Task } from './api'
 
 const eventReasons: Record<string, string> = {
     'no-op-edit': 'The worker produced no effective change.',
@@ -78,6 +78,35 @@ function eventActor(event: OperationalEvent) {
     return event.action === 'task' && event.actor !== 'supervisor' ? `Failure stage: ${actor}` : actor
 }
 
+const failureDetailLabels: Record<string, string> = {
+    'validation:nonzero-exit': 'Validation failed',
+    'execution:timeout': 'Execution timed out',
+    'execution:os-error': 'Execution OS error',
+    'execution:json-error': 'Execution returned invalid JSON',
+    'execution:http-error': 'Execution returned an HTTP error',
+    'execution:unexpected': 'Execution failed unexpectedly',
+}
+
+function failureDetailDescription(details: FailureDetails) {
+    const description = failureDetailLabels[`${details.stage}:${details.code}`]
+    if (!description) return null
+
+    const parts = [description]
+    if (typeof details.exit_status === 'number' && Number.isInteger(details.exit_status)
+        && details.exit_status >= -255 && details.exit_status <= 255) {
+        parts.push(`Exit code ${details.exit_status}`)
+    }
+    if (typeof details.duration_ms === 'number' && Number.isInteger(details.duration_ms)
+        && details.duration_ms >= 0 && details.duration_ms <= 600000) {
+        parts.push(`Duration ${details.duration_ms} ms`)
+    }
+    if (typeof details.output_bytes === 'number' && Number.isInteger(details.output_bytes)
+        && details.output_bytes >= 0 && details.output_bytes <= 65536) {
+        parts.push(`Output ${details.output_bytes} bytes`)
+    }
+    return parts.join(' · ')
+}
+
 function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefined }) {
     if (events === undefined || events === null) {
         return <p className="timeline-state" role="status">Operational event history is unavailable from this response.</p>
@@ -85,9 +114,9 @@ function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefin
     if (events.length === 0) {
         return <p className="timeline-state" role="status">No operational events are retained for this task. Task status alone does not confirm which agents ran.</p>
     }
-    return <ol className="interaction-timeline" aria-label="Recorded execution flow, chronological">
-        {events.map((event, index) => {
-            const nextEvent = events[index + 1]
+    return <ol className="interaction-timeline" aria-label="Recorded execution flow, newest first">
+        {events.slice().reverse().map((event, index, newestFirstEvents) => {
+            const nextEvent = newestFirstEvents[index + 1]
             return <li key={`${event.timestamp}-${event.attempt}-${event.actor}-${event.action}-${index}`}>
                 <div className="timeline-event-heading">
                     <strong>{eventTitle(event)}</strong>
@@ -97,12 +126,15 @@ function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefin
                     {new Date(event.timestamp * 1000).toLocaleString()}
                 </time>
                 <p>{eventDescription(event)}</p>
+                {event.failure_details && failureDetailDescription(event.failure_details) && <p>
+                    <strong>Failure details:</strong> {failureDetailDescription(event.failure_details)}
+                </p>}
                 {event.score !== null && <p>Recorded score: {event.score.toFixed(2)} / 1</p>}
                 {event.review_topics.length > 0 && <p>Review topics: {event.review_topics.join(', ')}</p>}
                 <p className="timeline-reason"><strong>Why:</strong> {event.reason ? eventReasons[event.reason] || 'A safe operational reason was recorded.' : 'No reason was recorded for this event.'}</p>
-                <p className="timeline-next"><strong>Next recorded:</strong> {nextEvent
+                <p className="timeline-next"><strong>Next older event:</strong> {nextEvent
                     ? `${eventTitle(nextEvent)} · Attempt ${nextEvent.attempt} · ${eventActor(nextEvent)}`
-                    : 'No later event is available in retained history.'}</p>
+                    : 'No earlier event is available in retained history.'}</p>
             </li>
         })}
     </ol>
@@ -121,11 +153,6 @@ export default function Interactions({ task }: { task: Task }) {
             <span className="muted">Task snapshot · {task.attempts ? `Attempt count: ${task.attempts}` : 'No attempts recorded'}</span>
         </div>
         <p className="interaction-note">Sanitized operational history, not a live conversation. Jobs and feedback may belong to earlier attempts. Refreshes every 10 seconds.</p>
-        <div className="interaction-timeline-section">
-            <h4>Execution flow</h4>
-            <p className="timeline-caption">Chronological retained events. Only persisted facts are shown.</p>
-            <ExecutionFlow events={task.events} />
-        </div>
         {!recorded && <p className="interaction-empty" role="status">No agent interactions recorded yet. A queued task does not confirm that an agent has started.</p>}
         <ul className="interaction-grid" aria-label="Recorded agent activity">
             <li>
@@ -164,6 +191,11 @@ export default function Interactions({ task }: { task: Task }) {
             <h4>Outcome</h4>
             <p>Task state: <strong>{task.status}</strong>. {task.status === 'queued' ? 'Waiting for a supervisor claim or retry.' : task.status === 'running' ? 'Execution is in progress; the active agent is not tracked.' : task.status === 'completed' ? 'Execution completed; human approval is not tracked here.' : 'Execution failed; see failure details below.'}</p>
             {task.pr_url && <p>A pull request is available via Human review below; this does not mean it was approved or merged.</p>}
+        </div>
+        <div className="interaction-timeline-section">
+            <h4>Execution flow</h4>
+            <p className="timeline-caption">Newest retained events first. Only persisted facts are shown.</p>
+            <ExecutionFlow events={task.events} />
         </div>
     </section>
 }

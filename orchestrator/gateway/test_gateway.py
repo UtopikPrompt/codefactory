@@ -153,12 +153,23 @@ def test_worker_result_attempt_must_match_active_attempt(task_gateway):
     db.execute("UPDATE tasks SET status='running', attempts=2 WHERE task_id=?", (task_id,))
     db.close()
     result = {"task_id": task_id, "repo": "org/repo", "issue_number": 2,
-              "status": "candidate_failed", "error": "validation-failed", "attempt": 1}
+              "status": "candidate_failed", "error": "validation-failed", "attempt": 1,
+              "failure_details": {"stage": "validation", "code": "nonzero-exit", "exit_status": 2,
+                                  "duration_ms": 125, "output_bytes": 37,
+                                  "output": "private validation output", "source": "private-source.py"}}
     assert task_request("POST", f"/api/v1/tasks/{task_id}", result, supervisor=False)[0] == 409
     result["attempt"] = 2
     assert task_request("POST", f"/api/v1/tasks/{task_id}", result, supervisor=False)[0] == 200
-    events = task_request("GET", f"/api/v1/tasks/{task_id}")[1]["events"]
+    detail = task_request("GET", f"/api/v1/tasks/{task_id}")[1]
+    events = detail["events"]
     assert len(events) == 1 and events[0]["attempt"] == 2
+    assert events[0]["failure_details"] == {
+        "stage": "validation", "code": "nonzero-exit", "exit_status": 2,
+        "duration_ms": 125, "output_bytes": 37,
+    }
+    assert detail["result"]["failure_details"] == events[0]["failure_details"]
+    assert "private validation output" not in json.dumps(detail)
+    assert "private-source.py" not in json.dumps(detail)
 
 
 @pytest.fixture

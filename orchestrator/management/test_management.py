@@ -435,8 +435,23 @@ def test_task_events_expose_only_bounded_operational_fields(boundary):
             "outcome": "rejected", "reason": "judge-rejected", "score": 0.4,
             "review_topics": ["tests", "security", "private"], "review": "secret review",
             "prompt": "secret prompt", "credential": "token",
+            "failure_details": {
+                "stage": "validation", "code": "nonzero-exit", "exit_status": 1,
+                "duration_ms": 1234, "output_bytes": 4096, "issue_text": "private issue",
+                "source": "private source", "path": "/private/path", "output": "raw validation output",
+                "traceback": "private traceback", "credential": "private credential",
+            },
         }, {
-            "timestamp": 1760000001, "attempt": 9, "actor": "worker", "action": "candidate",
+            "timestamp": 1760000001, "attempt": 3, "actor": "worker", "action": "candidate",
+            "failure_details": {"stage": "validation", "code": "timeout", "exit_status": 1},
+        }, {
+            "timestamp": 1760000002, "attempt": 4, "actor": "worker", "action": "candidate",
+            "failure_details": {
+                "stage": "validation", "code": "nonzero-exit", "exit_status": 256,
+                "duration_ms": True, "output_bytes": 65537,
+            },
+        }, {
+            "timestamp": 1760000003, "attempt": 9, "actor": "worker", "action": "candidate",
             "outcome": "returned", "reason": "private payload",
         }],
     })
@@ -445,8 +460,22 @@ def test_task_events_expose_only_bounded_operational_fields(boundary):
         "timestamp": 1760000000, "attempt": 2, "actor": "judge", "action": "review",
         "outcome": "rejected", "reason": "judge-rejected", "validation_status": None,
         "score": 0.4, "review_topics": ["tests", "security"],
+        "failure_details": {
+            "stage": "validation", "code": "nonzero-exit", "exit_status": 1,
+            "duration_ms": 1234, "output_bytes": 4096,
+        },
+    }, {
+        "timestamp": 1760000001, "attempt": 3, "actor": "worker", "action": "candidate",
+        "outcome": "recorded", "reason": None, "validation_status": None,
+        "score": None, "review_topics": [], "failure_details": None,
+    }, {
+        "timestamp": 1760000002, "attempt": 4, "actor": "worker", "action": "candidate",
+        "outcome": "recorded", "reason": None, "validation_status": None,
+        "score": None, "review_topics": [],
+        "failure_details": {"stage": "validation", "code": "nonzero-exit"},
     }]
-    assert "secret" not in response.text and "token" not in response.text and "private" not in response.text
+    for forbidden in ("secret", "token", "private", "raw validation output"):
+        assert forbidden not in response.text
 
 
 @pytest.mark.parametrize("coordination,score", [

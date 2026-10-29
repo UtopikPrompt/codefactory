@@ -51,23 +51,45 @@ test('opens task details inline and preserves task routes', async () => {
     await waitFor(() => expect(calls.some(([url]) => url.includes('status=running'))).toBe(true))
 })
 
-test('shows chronological execution flow at the top of expanded task detail', async () => {
+test('copies the task name to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))
+    const user = userEvent.setup()
+    mount()
+
+    await user.click(await screen.findByRole('button', { name: 'Copy task name task-1' }))
+
+    expect(writeText).toHaveBeenCalledWith('task-1')
+    expect(await screen.findByText('Task name copied')).toHaveAttribute('role', 'status')
+})
+
+test('shows task details and interaction summaries before the newest-first execution flow', async () => {
     taskDetailResponse = {
         ...task, status: 'running', attempts: 1,
         events: [
-            { timestamp: 1760000000, attempt: 1, actor: 'supervisor', action: 'claim', outcome: 'started', reason: null, validation_status: null, score: null, review_topics: [] },
-            { timestamp: 1760000001, attempt: 1, actor: 'supervisor', action: 'plan', outcome: 'recorded', reason: null, validation_status: null, score: null, review_topics: [] },
+            { timestamp: 1760000000, attempt: 1, actor: 'supervisor', action: 'claim', outcome: 'started', reason: null, validation_status: null, score: null, review_topics: [], failure_details: null },
+            { timestamp: 1760000001, attempt: 1, actor: 'supervisor', action: 'plan', outcome: 'recorded', reason: null, validation_status: null, score: null, review_topics: [], failure_details: null },
         ],
     }
     const user = userEvent.setup()
     mount()
     await user.click(await screen.findByRole('button', { name: 'Expand task task-1' }))
     const detail = await screen.findByRole('region', { name: 'Task detail for task-1' })
-    const flow = within(detail).getByRole('list', { name: 'Recorded execution flow, chronological' })
+    const flow = within(detail).getByRole('list', { name: 'Recorded execution flow, newest first' })
     expect(within(flow).getByText('Supervisor claimed this attempt')).toBeInTheDocument()
-    expect(within(flow).getByText(/Plan recorded · Attempt 1 · Supervisor/)).toBeInTheDocument()
-    expect(within(detail).getByText('No reason was recorded for this event.')).toBeInTheDocument()
-    expect(flow.compareDocumentPosition(within(detail).getByRole('list', { name: 'Recorded agent activity' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const flowItems = within(flow).getAllByRole('listitem')
+    expect(flowItems[0]).toHaveTextContent(/Plan recorded.*Attempt 1.*Supervisor/)
+    expect(flowItems[0]).toHaveTextContent('Plan recorded')
+    expect(flowItems[1]).toHaveTextContent('Supervisor claimed this attempt')
+    expect(within(flow).getAllByText('No reason was recorded for this event.')).toHaveLength(2)
+    const detailGrid = within(detail).getByRole('heading', { name: 'Execution steps' })
+    const activity = within(detail).getByRole('list', { name: 'Recorded agent activity' })
+    const feedback = within(detail).getByRole('heading', { name: 'Feedback loop' })
+    const timelineSection = flow.closest('.interaction-timeline-section')
+    expect(detailGrid.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(activity.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(feedback.compareDocumentPosition(flow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(timelineSection?.parentElement?.lastElementChild).toBe(timelineSection)
 })
 
 test('shows structured execution steps and a failed task error without raw payloads', async () => {

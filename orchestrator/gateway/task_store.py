@@ -33,7 +33,11 @@ def connect_task_database(path, init_lock):
         db.execute("""CREATE TABLE IF NOT EXISTS task_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, created_at REAL NOT NULL,
             attempt INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL,
-            reason TEXT, validation_status TEXT, score REAL, review_topics TEXT NOT NULL DEFAULT '[]')""")
+            reason TEXT, validation_status TEXT, score REAL, review_topics TEXT NOT NULL DEFAULT '[]',
+            failure_details TEXT)""")
+        event_columns = {row[1] for row in db.execute("PRAGMA table_info(task_events)")}
+        if "failure_details" not in event_columns:
+            db.execute("ALTER TABLE task_events ADD COLUMN failure_details TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS task_events_by_task ON task_events(task_id, event_id)")
     return db
 

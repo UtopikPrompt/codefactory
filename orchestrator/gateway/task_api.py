@@ -19,18 +19,38 @@ EVENT_REASONS = {
     "judge-rejected",
 }
 EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
+FAILURE_DETAIL_CODES = {
+    "validation": {"nonzero-exit"},
+    "execution": {"timeout", "os-error", "json-error", "http-error", "unexpected"},
+}
+
+
+def safe_failure_details(details):
+    if not isinstance(details, dict):
+        return None
+    stage, code = details.get("stage"), details.get("code")
+    if not isinstance(stage, str) or not isinstance(code, str) or stage not in FAILURE_DETAIL_CODES or code not in FAILURE_DETAIL_CODES[stage]:
+        return None
+    safe = {"stage": stage, "code": code}
+    for key, maximum in (("exit_status", 255), ("duration_ms", 600000), ("output_bytes", 65536)):
+        value = details.get(key)
+        minimum = -maximum if key == "exit_status" else 0
+        if type(value) is int and minimum <= value <= maximum:
+            safe[key] = value
+    return safe
 
 
 def append_event(db, task_id, attempt, actor, action, outcome, *, reason=None, validation_status=None, score=None,
-                 review_topics=()):
+                 review_topics=(), failure_details=None):
     safe_reason = reason if reason in EVENT_REASONS else None
     safe_validation = validation_status if validation_status in ("passed", "failed", "not-run") else None
     safe_score = score if type(score) in (int, float) and 0 <= score <= 1 else None
     topics = [topic for topic in EVENT_TOPICS if topic in review_topics]
+    safe_details = safe_failure_details(failure_details)
     db.execute("""INSERT INTO task_events(task_id,created_at,attempt,actor,action,outcome,reason,
-        validation_status,score,review_topics) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        validation_status,score,review_topics,failure_details) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (task_id, time.time(), max(1, min(8, int(attempt))), actor, action, outcome, safe_reason,
-         safe_validation, safe_score, json.dumps(topics)))
+         safe_validation, safe_score, json.dumps(topics), json.dumps(safe_details, sort_keys=True) if safe_details else None))
     db.execute("""DELETE FROM task_events WHERE task_id=? AND event_id NOT IN
         (SELECT event_id FROM task_events WHERE task_id=? ORDER BY event_id DESC LIMIT 128)""", (task_id, task_id))
 
@@ -42,6 +62,10 @@ def operational_events(db, task_id):
             topics = json.loads(row["review_topics"] or "[]")
         except (ValueError, TypeError):
             topics = []
+        try:
+            failure_details = safe_failure_details(json.loads(row["failure_details"] or "null"))
+        except (ValueError, TypeError):
+            failure_details = None
         events.append({
             "timestamp": row["created_at"], "attempt": row["attempt"] if type(row["attempt"]) is int and 1 <= row["attempt"] <= 8 else None,
             "actor": row["actor"] if row["actor"] in ("supervisor", "worker", "judge") else "supervisor",
@@ -51,6 +75,7 @@ def operational_events(db, task_id):
             "validation_status": row["validation_status"] if row["validation_status"] in ("passed", "failed", "not-run") else None,
             "score": row["score"] if type(row["score"]) in (int, float) and 0 <= row["score"] <= 1 else None,
             "review_topics": [topic for topic in EVENT_TOPICS if isinstance(topics, list) and topic in topics],
+            "failure_details": failure_details,
         })
     return events
 
@@ -350,6 +375,12 @@ class TaskAPI:
                 handler._json(409, {"error": "task-attempt-mismatch"})
                 return
             payload = {**payload, "attempt": reported_attempt}
+            if "failure_details" in payload:
+                failure_details = safe_failure_details(payload.get("failure_details"))
+                if failure_details is None:
+                    payload.pop("failure_details")
+                else:
+                    payload["failure_details"] = failure_details
             if task["status"] in ("completed", "failed"):
                 db.commit()
                 handler._json(409, {"error": "task-already-terminal"})
@@ -369,7 +400,8 @@ class TaskAPI:
                     reason = str(payload.get("error", "")).split(":", 1)[0]
                     append_event(db, task["task_id"], reported_attempt, "worker", "candidate",
                                  "failed" if payload["status"] == "candidate_failed" else "returned",
-                                 reason=reason, validation_status=validation.get("status"))
+                                 reason=reason, validation_status=validation.get("status"),
+                                 failure_details=payload.get("failure_details"))
                 except (TypeError, ValueError):
                     append_event(db, task["task_id"], task["attempts"] or 1, "worker", "candidate", "returned")
             db.commit()

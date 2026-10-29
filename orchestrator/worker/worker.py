@@ -154,7 +154,23 @@ class CodeEditor:
 
 
 class TaskFailure(ValueError):
-    pass
+    def __init__(self, message, failure_details=None):
+        super().__init__(message)
+        self.failure_details = failure_details
+
+
+def _generic_failure_details(exc):
+    if isinstance(exc, TimeoutError):
+        code = "timeout"
+    elif isinstance(exc, OSError):
+        code = "os-error"
+    elif isinstance(exc, json.JSONDecodeError):
+        code = "json-error"
+    elif isinstance(exc, httpx.HTTPError):
+        code = "http-error"
+    else:
+        code = "unexpected"
+    return {"stage": "execution", "code": code}
 
 
 def _issue_identity(payload):
@@ -420,6 +436,7 @@ async def _generate_edits(issue, context, policy, supervisor_plan="", previous_f
 
 
 async def _run_validation(workspace, policy):
+    started = time.monotonic()
     argv = ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
             "--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64",
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
@@ -444,7 +461,11 @@ async def _run_validation(workspace, policy):
         await process.wait()
         raise
     if code != 0:
-        raise TaskFailure("validation-failed")
+        raise TaskFailure("validation-failed", {
+            "stage": "validation", "code": "nonzero-exit", "exit_status": code,
+            "duration_ms": max(0, min(600000, int((time.monotonic() - started) * 1000))),
+            "output_bytes": len(output),
+        })
     return output.decode("utf-8", errors="replace")
 
 
@@ -663,8 +684,13 @@ async def _execute_task(client, headers, acceptor_url, worker_id, spawn_payload,
                          "changed_files": changed}
     except Exception as exc:  # noqa: BLE001
         reason = str(exc) if isinstance(exc, TaskFailure) else "task-execution-failed"
+        failure_details = exc.failure_details if isinstance(exc, TaskFailure) else _generic_failure_details(exc)
         final = {"task_id": task_id, **identity, "status": "candidate_failed", "error": reason,
                  "validation": {"status": "failed"}}
+        if failure_details:
+            final["failure_details"] = failure_details
+            logger.warning("worker failure diagnostics task=%s details=%s", task_id,
+                           json.dumps(failure_details, sort_keys=True))
     try:
         _reject_secret_content(json.dumps(final))
     except TaskFailure:

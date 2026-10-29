@@ -2,7 +2,7 @@ import { Fragment, useState, useSyncExternalStore } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Activity, ArrowLeft, ArrowRight, Bot, Check, ChevronRight, CircuitBoard, ExternalLink, GitPullRequest, ListTodo, LoaderCircle, LockKeyhole, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowRight, Bot, Check, ChevronRight, CircuitBoard, Copy, ExternalLink, GitPullRequest, ListTodo, LoaderCircle, LockKeyhole, Plus, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { api, ApiError } from './api'
 import type { Config, Task, TaskPage } from './api'
 import Interactions from './Interactions'
@@ -84,7 +84,6 @@ function TaskDetail({ taskId }: { taskId: string }) {
     return <section id={`task-detail-${taskId}`} className="task-detail" aria-label={`Task detail for ${taskId}`}>
         <div className="detail-heading"><div><span className="eyebrow">Task detail</span><h2 className="task-identifier">{taskId}</h2></div><a className="icon-button" href="#/tasks" aria-label="Collapse task detail" title="Collapse task detail"><X /></a></div>
         {query.isPending || query.isError || !task ? <QueryState loading={query.isPending} error={query.error} retry={() => { void query.refetch() }} /> : <>
-            <Interactions task={task} />
             <div className="detail-grid">
                 <section className="detail-section" aria-labelledby={`execution-heading-${taskId}`}>
                     <h3 id={`execution-heading-${taskId}`}>Execution steps</h3>
@@ -118,12 +117,14 @@ function TaskDetail({ taskId }: { taskId: string }) {
                     {task.pr_url && <a className="review-link" href={task.pr_url} target="_blank" rel="noreferrer"><GitPullRequest />Human review<ExternalLink /></a>}
                 </section>
             </div>
+            <Interactions task={task} />
         </>}
     </section>
 }
 
 function Tasks({ taskId }: { taskId?: string }) {
     const [status, setStatus] = useState('')
+    const [copyStatus, setCopyStatus] = useState('')
     const [repo, setRepo] = useState('')
     const [filter, setFilter] = useState('')
     const [offset, setOffset] = useState(0)
@@ -137,6 +138,14 @@ function Tasks({ taskId }: { taskId?: string }) {
         void client.invalidateQueries({ queryKey: ['tasks'] })
         void client.invalidateQueries({ queryKey: ['task', task.task_id] })
         window.location.hash = `/tasks/${task.task_id}`
+    }
+    async function copyTaskName(taskId: string) {
+        try {
+            await navigator.clipboard.writeText(taskId)
+            setCopyStatus('Task name copied')
+        } catch {
+            setCopyStatus('Unable to copy task name')
+        }
     }
     return <>
         <header className="page-heading"><div><div className="eyebrow"><Activity />Runtime</div><h1>Tasks</h1></div><Submission onSubmitted={submitted} /></header>
@@ -153,9 +162,10 @@ function Tasks({ taskId }: { taskId?: string }) {
             <section className="task-list" aria-label="Task list">
                 {query.isPending || query.isError ? <QueryState loading={query.isPending} error={query.error} retry={() => { void query.refetch() }} /> : query.data.tasks.length === 0 ? <QueryState empty={offset ? 'No tasks on this page.' : 'No tasks found.'} retry={() => { void query.refetch() }} /> :
                     <table><thead><tr><th>Task / repository</th><th>Issue</th><th>Status</th><th className="wide-column">Attempts</th><th className="wide-column">Lifecycle</th><th><span className="sr-only">Open</span></th></tr></thead><tbody>{query.data.tasks.map(task => <Fragment key={task.task_id}>
-                        <tr className={taskId === task.task_id ? 'selected' : ''}><td><a className="task-link mono" title={task.task_id} href={`#/tasks/${task.task_id}`}>{task.task_id.length > 40 ? `${task.task_id.slice(0, 40)}...` : task.task_id}</a><span className="repository-name">{task.repo || 'Not recorded'}</span></td><td>{task.issue_number ? `#${task.issue_number}` : '-'}</td><td><Status value={task.status} /></td><td className="wide-column mono">{task.attempts ?? '-'}</td><td className="wide-column">{task.lifecycle}</td><td><button className={`row-open ${taskId === task.task_id ? 'expanded' : ''}`} type="button" aria-label={`${taskId === task.task_id ? 'Collapse' : 'Expand'} task ${task.task_id}`} aria-expanded={taskId === task.task_id} aria-controls={taskId === task.task_id ? `task-detail-${task.task_id}` : undefined} onClick={() => { window.location.hash = taskId === task.task_id ? '/tasks' : `/tasks/${task.task_id}` }}><ChevronRight /></button></td></tr>
+                        <tr className={taskId === task.task_id ? 'selected' : ''}><td><div className="task-name"><a className="task-link mono" title={task.task_id} href={`#/tasks/${task.task_id}`}>{task.task_id.length > 40 ? `${task.task_id.slice(0, 40)}...` : task.task_id}</a><button type="button" className="copy-task" aria-label={`Copy task name ${task.task_id}`} onClick={() => { void copyTaskName(task.task_id) }}><Copy />Copy</button></div><span className="repository-name">{task.repo || 'Not recorded'}</span></td><td>{task.issue_number ? `#${task.issue_number}` : '-'}</td><td><Status value={task.status} /></td><td className="wide-column mono">{task.attempts ?? '-'}</td><td className="wide-column">{task.lifecycle}</td><td><button className={`row-open ${taskId === task.task_id ? 'expanded' : ''}`} type="button" aria-label={`${taskId === task.task_id ? 'Collapse' : 'Expand'} task ${task.task_id}`} aria-expanded={taskId === task.task_id} aria-controls={taskId === task.task_id ? `task-detail-${task.task_id}` : undefined} onClick={() => { window.location.hash = taskId === task.task_id ? '/tasks' : `/tasks/${task.task_id}` }}><ChevronRight /></button></td></tr>
                         {taskId === task.task_id && <tr className="detail-row"><td colSpan={6}><TaskDetail taskId={task.task_id} /></td></tr>}
                     </Fragment>)}</tbody></table>}
+                {copyStatus && <p className="copy-status" role="status">{copyStatus}</p>}
                 <footer className="pagination"><span>{query.data && !query.isError ? `${query.data.total === 0 ? 0 : offset + 1}-${Math.min(offset + 25, query.data.total)} of ${query.data.total}` : '-'}</span><div><IconButton label="Previous page" onClick={() => setOffset(Math.max(0, offset - 25))} disabled={offset === 0 || query.isPending}><ArrowLeft /></IconButton><IconButton label="Next page" onClick={() => setOffset(offset + 25)} disabled={!query.data || query.isError || offset + 25 >= query.data.total || query.isFetching}><ArrowRight /></IconButton></div></footer>
             </section>
         </div>
