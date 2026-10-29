@@ -375,7 +375,8 @@ def test_pr_policy_fails_closed_and_publication_never_merges(monkeypatch):
 
 
 @pytest.mark.parametrize("obsolete_setting", [None, "REPO_GITHUB_PAT", "CODEFACTORY_AUTH_TOKEN", "PR_GITHUB_TOKEN"])
-def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkeypatch, obsolete_setting):
+@pytest.mark.parametrize("ttl", [None, 3600, 1, 604800])
+def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkeypatch, obsolete_setting, ttl):
     catalog_hash = "a" * 64
     ownership_labels = {"controller-uid": "template-uid", "job-name": "orchestrator-worker",
                         "batch.kubernetes.io/controller-uid": "template-uid",
@@ -407,6 +408,10 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     monkeypatch.setattr(supervisor_module, "_k8s_request", api)
     monkeypatch.delenv("AGENT_CATALOG_NAME_PREFIX", raising=False)
     monkeypatch.delenv("WORKER_JOB_TEMPLATE_CONFIGMAP", raising=False)
+    if ttl is None:
+        monkeypatch.delenv("TASK_JOB_TTL_SECONDS_AFTER_FINISHED", raising=False)
+    else:
+        monkeypatch.setenv("TASK_JOB_TTL_SECONDS_AFTER_FINISHED", str(ttl))
     task = {"task_id": "issue-123", "attempts": 1, "config_hash": catalog_hash,
             "config_version": "1", "payload": '{"repo":"org/repo","repository_auth":"github-app"}', "plan": "test plan",
             "repo": "org/repo", "credential_ref": "task-credential-issue-123"}
@@ -434,6 +439,7 @@ def test_dispatch_injects_only_task_scoped_credentials_and_pinned_catalog(monkey
     assert json.loads(env["ASSIGNED_TASK_PAYLOAD"]["value"])["supervisor_plan"] == "test plan"
     catalog_name = job["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"]
     assert catalog_name == f"orchestrator-agent-catalog-{catalog_hash[:12]}"
+    assert job["spec"]["ttlSecondsAfterFinished"] == (ttl if ttl is not None else 86400)
 
 
 @pytest.mark.parametrize("payload", [{}, {"repository_auth": "pat"}])

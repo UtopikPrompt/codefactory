@@ -40,6 +40,12 @@ def helm_values():
     }
 
 
+def worker_job_spec(documents):
+    template = next(document for document in documents if document["kind"] == "ConfigMap"
+                    and document["metadata"]["name"] == "orchestrator-worker")
+    return json.loads(template["data"]["job-spec.json"])
+
+
 @pytest.fixture
 def task_gateway(monkeypatch, tmp_path):
     monkeypatch.setenv("TASK_DB_PATH", str(tmp_path / "tasks.sqlite3"))
@@ -1067,12 +1073,12 @@ def test_helm_credential_references_and_rbac(helm_values):
     assert role["rules"] == [
         {"apiGroups": [""], "resources": ["secrets"], "verbs": ["create", "delete"]},
     ]
-    job = next(document for document in documents if document["kind"] == "Job")
-    assert job["spec"]["suspend"] is True
-    for document in documents:
-        if document["kind"] not in ("Deployment", "Job"):
-            continue
-        pod = document["spec"]["template"]["spec"]
+    worker = worker_job_spec(documents)
+    assert worker["suspend"] is True
+    workloads = [(document["metadata"]["name"], document["spec"]["template"]["spec"])
+                 for document in documents if document["kind"] == "Deployment"]
+    workloads.append(("orchestrator-worker", worker["template"]["spec"]))
+    for name, pod in workloads:
         assert pod["imagePullSecrets"] == [{"name": "test-pull"}]
         for container in pod["containers"]:
             env = {entry["name"]: entry for entry in container.get("env", [])}
@@ -1081,7 +1087,7 @@ def test_helm_credential_references_and_rbac(helm_values):
             if container["name"] != "gateway":
                 if container["name"] == "coder":
                     assert "JUDGE_URL" not in env and "JUDGE_MODEL" not in env
-                if document["metadata"]["name"] == "orchestrator-supervisor":
+                if name == "orchestrator-supervisor":
                     assert pod["automountServiceAccountToken"] is True
     ingress = next(document for document in documents if document["kind"] == "Ingress")
     assert ingress["spec"]["tls"] and ingress["metadata"]["annotations"]["traefik.ingress.kubernetes.io/router.entrypoints"] == "websecure"
@@ -1115,8 +1121,8 @@ def test_helm_pins_nonsecret_catalog_runtime_and_p40_routes(helm_values):
     assert runtime["judge_url"] == "http://judge.inference.svc.cluster.local:8000/v1"
     assert runtime["coder_native_download"] is True
     assert runtime["judge_native_download"] is True
-    worker = next(document for document in documents if document["kind"] == "Job")
-    worker_env = {entry["name"]: entry for entry in worker["spec"]["template"]["spec"]["containers"][0]["env"]}
+    worker = worker_job_spec(documents)
+    worker_env = {entry["name"]: entry for entry in worker["template"]["spec"]["containers"][0]["env"]}
     assert worker_env["CODER_URL"]["value"] == runtime["coder_url"]
     assert worker_env["CODER_NATIVE_DOWNLOAD"]["value"] == "true"
     assert "JUDGE_URL" not in worker_env and "OPENAI_API_KEY" not in worker_env
@@ -1149,8 +1155,8 @@ def test_helm_ingress_tls_termination(mode, secret, profile, helm_values):
         assert annotations["traefik.ingress.kubernetes.io/router.entrypoints"] == "web"
         assert "traefik.ingress.kubernetes.io/router.tls" not in annotations
         assert "tls" not in ingress["spec"]
-    job = next(document for document in documents if document["kind"] == "Job")
-    env = {entry["name"]: entry for entry in job["spec"]["template"]["spec"]["containers"][0]["env"]}
+    worker = worker_job_spec(documents)
+    env = {entry["name"]: entry for entry in worker["template"]["spec"]["containers"][0]["env"]}
     reference = env["ACCEPTOR_URL"]["valueFrom"]["configMapKeyRef"]
     config = next(document for document in documents if document["kind"] == "ConfigMap"
                   and document["metadata"]["name"] == reference["name"])
@@ -1190,11 +1196,10 @@ def test_helm_task_job_ttl_reaches_submitted_job(monkeypatch, ttl, helm_values):
     rendered = subprocess.run(["helm", "template", "ttl-check", str(chart), "--values", "-"],
                               input=yaml.safe_dump(values), capture_output=True, text=True, check=True)
     documents = [document for document in yaml.safe_load_all(rendered.stdout) if document]
-    seed = next(document for document in documents if document["kind"] == "Job")
-    original = copy.deepcopy(seed)
-    assert seed["spec"]["suspend"] is True
-    assert seed["spec"]["backoffLimit"] == 0
-    assert "ttlSecondsAfterFinished" not in seed["spec"]
+    worker = worker_job_spec(documents)
+    assert worker["suspend"] is True
+    assert worker["backoffLimit"] == 0
+    assert "ttlSecondsAfterFinished" not in worker
     supervisor = next(document for document in documents if document["kind"] == "Deployment"
                       and document["metadata"]["name"] == "orchestrator-supervisor")
     env = {entry["name"]: entry.get("value")
@@ -1205,7 +1210,6 @@ def test_helm_task_job_ttl_reaches_submitted_job(monkeypatch, ttl, helm_values):
     gateway_env = {entry["name"]: entry.get("value")
                    for entry in gateway["spec"]["template"]["spec"]["containers"][0]["env"]}
     assert "TASK_JOB_TTL_SECONDS_AFTER_FINISHED" not in gateway_env
-    assert seed == original
 
 
 @pytest.mark.parametrize("ttl", [0, -1, 604801, 1.5, "3600", True, None])
