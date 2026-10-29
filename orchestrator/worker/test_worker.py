@@ -476,6 +476,70 @@ def test_generate_edits_includes_supervisor_plan(monkeypatch, supervisor_plan):
     assert result == edits
 
 
+@pytest.mark.parametrize("replacement", ["value = 'private-source'\n", "\nvalue = 'private-source'\n\n"])
+@pytest.mark.parametrize("changed_edit_first", [False, True])
+def test_no_op_diagnostic_has_metadata_only_and_rejects_before_writes(
+    monkeypatch, tmp_path, caplog, replacement, changed_edit_first,
+):
+    original = "value = 'private-source'\n"
+    monkeypatch.setenv("TASK_WORK_DIR", str(tmp_path))
+    monkeypatch.setenv("TASK_REPO_POLICIES", json.dumps({"org/repo": {
+        "context_files": ["src/app.py"], "editable_files": ["src/app.py", "src/other.py"],
+        "validation_argv": ["/usr/local/bin/python", "-m", "pytest"],
+    }}))
+
+    class ReadOnlyGitHub:
+        def __init__(self, _client, _repo):
+            pass
+
+        async def call(self, method, path):
+            assert method == "GET"
+            return {
+                "": {"full_name": "org/repo", "default_branch": "main"},
+                "/issues/3": {"number": 3, "title": "private-issue", "body": "private-body",
+                              "html_url": "https://github.com/org/repo/issues/3"},
+                "/git/ref/heads/main": {"object": {"sha": "a" * 40}},
+            }[path]
+
+    async def snapshot(_github, editor, _sha):
+        full = editor.safe_path("src/app.py")
+        full.parent.mkdir(parents=True)
+        full.write_text(original)
+
+    edits = [{"path": "src/app.py", "content": replacement}]
+    if changed_edit_first:
+        edits.insert(0, {"path": "src/other.py", "content": "private-new-source\n"})
+    monkeypatch.setattr(worker, "GitHub", ReadOnlyGitHub)
+    monkeypatch.setattr(worker, "_snapshot", snapshot)
+    monkeypatch.setattr(worker, "_generate_edits", AsyncMock(return_value=edits))
+    apply = Mock(side_effect=AssertionError("Must reject before writing any edit"))
+    validate = AsyncMock(side_effect=AssertionError("Must not validate a rejected edit"))
+    monkeypatch.setattr(worker.CodeEditor, "apply_edits", apply)
+    monkeypatch.setattr(worker, "_run_validation", validate)
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(200, json={"task_id": "task-3", "status": "candidate_failed"})
+    payload = {"repo": "org/repo", "issue_number": 3, "supervisor_plan": "private-plan"}
+    result = asyncio.run(worker._run_worker(client, "https://acceptor", "worker", payload, "task-3"))
+    assert result == {
+        "task_id": "task-3", "repo": "org/repo", "issue_number": 3,
+        "status": "candidate_failed", "error": "no-op-edit", "validation": {"status": "failed"},
+    }
+    records = [r for r in caplog.records if r.message.startswith("generated_edit_rejected ")]
+    assert len(records) == 1
+    diagnostic = json.loads(records[0].message.split(" ", 1)[1])
+    assert diagnostic == {
+        "task_id": "task-3", "reason": "no-op-edit", "path": "src/app.py", "base_sha": "a" * 40,
+        "edit_index": int(changed_edit_first), "edit_count": len(edits),
+        "original_bytes": len(original.encode()), "replacement_bytes": len(replacement.encode()),
+        "exact_unchanged": replacement == original, "strip_unchanged": True,
+    }
+    assert "private-" not in records[0].message
+    apply.assert_not_called()
+    validate.assert_not_awaited()
+    assert client.post.call_args.kwargs["json"] == result
+    assert not list(tmp_path.glob("task-*"))
+
+
 @pytest.mark.parametrize("repo", ["first/project", "another/backend"])
 def test_automatic_policy_needs_no_repository_entry(monkeypatch, tmp_path, repo):
     monkeypatch.setenv("TASK_REPO_POLICIES", "{}")

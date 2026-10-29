@@ -479,6 +479,13 @@ async def _implement_issue(client, payload, task_id, workspace):
         full = editor.safe_path(path)
         originals[path] = full.read_text() if full.exists() else ""
         if originals[path].strip() == content.strip():
+            logger.warning("generated_edit_rejected %s", json.dumps({
+                "task_id": task_id, "reason": "no-op-edit", "path": path,
+                "base_sha": sha, "edit_index": len(seen) - 1, "edit_count": len(edits),
+                "original_bytes": len(originals[path].encode()),
+                "replacement_bytes": len(content.encode()),
+                "exact_unchanged": originals[path] == content, "strip_unchanged": True,
+            }, sort_keys=True))
             raise TaskFailure("no-op-edit")
     _output, changed, contents = editor.apply_edits(edits)
     if len(changed) != len(edits):
