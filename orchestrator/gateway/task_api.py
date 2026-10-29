@@ -3,7 +3,6 @@
 import json
 import time
 
-
 EVENT_REASONS = {
     "no-op-edit", "empty-or-invalid-edits", "invalid-generation-output", "invalid-generated-edit",
     "edit-outside-policy", "unsafe-edit-path", "protected-edit-path", "secret-in-model-context",

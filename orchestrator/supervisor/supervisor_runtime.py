@@ -5,7 +5,12 @@ import json
 import time
 import uuid
 
-from task_runtime import failure_feedback, record_task_event, requeue_failed_task, review_topics
+from task_runtime import (
+    failure_feedback,
+    record_task_event,
+    requeue_failed_task,
+    review_topics,
+)
 
 
 class SupervisorLoop:
