@@ -191,12 +191,13 @@ def test_admin_operations_without_repository_access(boundary, tmp_path, reposito
     assert client.get("/management/api/repositories").json() == {"repositories": []}
     upstream.assert_called_once()
     assert upstream.call_args.args[0].url.path == "/api/v1/config"
-    upstream.return_value = httpx.Response(200, json={"tasks": [{"task_id": "task-1", "patch": "private"}],
+    upstream.return_value = httpx.Response(200, json={"tasks": [{"task_id": "task-1", "role": "doc", "patch": "private"}],
                                                     "total": 1, "limit": 25, "offset": 0})
-    assert client.get("/management/api/tasks").json()["tasks"] == [{"task_id": "task-1"}]
-    upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "result": {"patch": "private"}})
+    assert client.get("/management/api/tasks").json()["tasks"] == [{"task_id": "task-1", "role": "doc"}]
+    upstream.return_value = httpx.Response(200, json={"task_id": "task-1", "role": "doc", "result": {"patch": "private"}})
     assert client.get("/management/api/tasks/task-1").json() == {
         "task_id": "task-1",
+        "role": "doc",
         "execution": {
             "job_name": None,
             "worker_status": None,
@@ -597,7 +598,7 @@ def test_adapter_to_real_gateway_contract(boundary, monkeypatch, tmp_path, auth_
         if github_status != 200:
             raise urllib.error.HTTPError("https://api.github.com" + path, github_status, "denied", {}, None)
         if path == "/repos/org/repo/issues/7":
-            return {"number": 7, "html_url": "https://github.com/org/repo/issues/7"}
+                return {"number": 7, "html_url": "https://github.com/org/repo/issues/7", "labels": []}
         return []
 
     monkeypatch.setattr(gateway, "_github", Mock(side_effect=github))

@@ -1,5 +1,6 @@
 """Tests for gateway task intake, credential validation, and lifecycle handling."""
 
+import asyncio
 import base64
 import copy
 import io
@@ -7,17 +8,19 @@ import json
 import os
 import runpy
 import shutil
+import sqlite3
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 import server
 import yaml
 from github_auth import AuthenticationError, AuthorizationError
+from security import validate_repository
 from task_api import append_event
 
 APP_VALUES = yaml.safe_load((Path(__file__).resolve().parents[2] / "helm/orchestrator/example.values.yaml").read_text())["githubAuth"]
@@ -80,7 +83,7 @@ def task_gateway(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_github_app", lambda: app)
     monkeypatch.setattr(server, "SUPERVISOR_TOKEN", "supervisor-test-token")
     monkeypatch.setenv("GATEWAY_TRANSPORT_MODE", "local-http")
-    monkeypatch.setattr(server, "_validate_repository", Mock())
+    monkeypatch.setattr(server, "_validate_repository", Mock(return_value="coder"))
     monkeypatch.setattr(server.secrets, "token_urlsafe", Mock(return_value="callback-test-only"))
     stored = {}
     def kubernetes(method, path, body=None):
@@ -110,6 +113,17 @@ def task_request(method, path, payload=None, token="test-token", repository_toke
                  authorization=None, user_token="ghu_user-test-only"):
     if (supervisor and method == "POST" and path.startswith("/api/v1/tasks/") and isinstance(payload, dict)
         and payload.get("status") in ("completed", "failed") and callback == "callback-test-only"):
+        task_id = path.removeprefix("/api/v1/tasks/")
+        db = server._task_db()
+        task = db.execute("SELECT attempts,status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        attempt = max(1, task["attempts"] or 0) if task else 1
+        owner = "test-supervisor-owner"
+        if task and task["status"] not in ("completed", "failed"):
+            db.execute("""UPDATE tasks SET status='running',attempts=?,claim_owner=?,
+                pr_url=COALESCE(?,pr_url) WHERE task_id=?""",
+                       (attempt, owner, payload.get("pr_url"), task_id))
+        db.close()
+        payload = {**payload, "claim_owner": owner, "attempt": attempt}
         path = path.replace("/api/v1/tasks/", "/api/v1/supervisor/tasks/", 1)
         token = "supervisor-test-token"
     body = json.dumps(payload).encode()
@@ -129,6 +143,112 @@ def task_request(method, path, payload=None, token="test-token", repository_toke
 
 def issue_payload(repo="org/repo"):
     return {"name": "drain", "ref": "refs/heads/main", "payload": {"repo": repo, "issue_number": 2}}
+
+
+@pytest.mark.parametrize("labels,expected_role", [
+    ([{"name": "Documentation"}], "doc"),
+    ([{"name": "bug"}], "coder"),
+    ([], "coder"),
+])
+def test_repository_validation_routes_from_authoritative_issue_labels(labels, expected_role):
+    def github(_method, path, *, token):
+        assert token == "installation-token"
+        if path == "/repos/org/repo":
+            return {"full_name": "org/repo", "archived": False}
+        if path.endswith("/issues/2"):
+            return {"number": 2, "html_url": "https://github.com/org/repo/issues/2", "labels": labels}
+        return []
+
+    assert validate_repository("org/repo", 2, "installation-token", github) == expected_role
+
+
+def test_client_cannot_force_documentation_role(task_gateway):
+    code, response = task_request("POST", "/api/v1/tasks/spawn", {
+        "repo": "org/repo", "issue_number": 2, "role": "doc", "task_role": "doc",
+    })
+    assert code == 202
+    with server._task_db() as db:
+        task = db.execute("SELECT role,payload FROM tasks WHERE task_id=?", (response["task_id"],)).fetchone()
+    payload = json.loads(task["payload"])
+    assert task["role"] == payload["task_role"] == "coder"
+    assert "role" not in payload
+
+
+def test_doc_agent_shares_coder_model_and_has_no_review_tool(task_gateway):
+    db = server._task_db()
+    try:
+        config = server.agent_config.active(db)
+    finally:
+        db.close()
+    assert [model["role"] for model in config["models"]] == ["coder", "judge"]
+    agents = {agent["role"]: agent for agent in config["agents"]}
+    assert set(agents) == {"coder", "doc", "judge"}
+    assert agents["doc"]["endpoint_alias"] == "coder"
+    assert agents["doc"]["tools"] == ["repository_read", "candidate_edit", "sandbox_validation"]
+    assert agents["judge"]["tools"] == ["candidate_review"]
+
+
+def test_catalog_upgrade_adds_doc_role_and_preserves_active_runtime(tmp_path, monkeypatch):
+    chart_files = Path(__file__).resolve().parents[2] / "helm/orchestrator/files"
+    catalog = yaml.safe_load((chart_files / "agent-catalog.yaml").read_text())
+    catalog_schema = (chart_files / "agent-catalog.schema.json").read_text()
+    old_catalog = {**catalog, "roles": {key: value for key, value in catalog["roles"].items() if key != "doc"}}
+    old_catalog_text = yaml.safe_dump(old_catalog, sort_keys=False, allow_unicode=False)
+    old_runtime = json.dumps({"version": "1", "catalog": old_catalog_text, "coder_model": "active-coder",
+                              "judge_model": "active-judge", "coder_native_download": False,
+                              "judge_native_download": False, "prompts": {"worker": "keep this", "planner": "", "judge": ""}})
+    old_hash = server.hashlib.sha256((old_catalog_text + catalog_schema + old_runtime).encode()).hexdigest()
+    db_path = str(tmp_path / "tasks.sqlite3")
+    monkeypatch.setenv("TASK_DB_PATH", db_path)
+    db = server.connect_task_database(db_path, server.DB_INIT_LOCK)
+    db.execute("""INSERT INTO agent_config_versions
+        (config_hash,config_version,revision,catalog,catalog_schema,runtime_config,created_at,created_by)
+        VALUES(?,?,?,?,?,?,?,?)""",
+        (old_hash, "1", 1, old_catalog_text, catalog_schema, old_runtime, 1.0, "helm"))
+    db.execute("INSERT INTO agent_config_state(singleton,active_config_hash) VALUES(1,?)", (old_hash,))
+    db.close()
+
+    new_catalog = (chart_files / "agent-catalog.yaml").read_text()
+    new_runtime = json.dumps({"version": "1", "catalog": new_catalog, "coder_model": "seed-coder",
+                              "judge_model": "seed-judge", "coder_native_download": False,
+                              "judge_native_download": False, "prompts": {"worker": "", "planner": "", "judge": ""}})
+    new_hash = server.hashlib.sha256((new_catalog + catalog_schema + new_runtime).encode()).hexdigest()
+    for name, value in (("AGENT_CONFIG_HASH", new_hash), ("AGENT_CONFIG_VERSION", "1"),
+                        ("AGENT_CATALOG_YAML", new_catalog), ("AGENT_CATALOG_SCHEMA_JSON", catalog_schema),
+                        ("AGENT_RUNTIME_CONFIG_JSON", new_runtime)):
+        monkeypatch.setenv(name, value)
+
+    db = server._task_db()
+    try:
+        active = server.agent_config.active_row(db)
+        active_runtime = json.loads(active["runtime_config"])
+        assert active["config_version"] == "1-r2"
+        assert set(yaml.safe_load(active["catalog"])["roles"]) == {"coder", "doc", "judge"}
+        assert active_runtime["coder_model"] == "active-coder"
+        assert active_runtime["judge_model"] == "active-judge"
+        assert active_runtime["prompts"]["worker"] == "keep this"
+        assert db.execute("SELECT catalog FROM agent_config_versions WHERE config_hash=?", (old_hash,)).fetchone()
+    finally:
+        db.close()
+
+
+def test_authoritative_documentation_role_is_persisted_and_inherited_by_retry(task_gateway):
+    server._validate_repository.return_value = "doc"
+    code, response = task_request("POST", "/api/v1/tasks/spawn", issue_payload())
+    assert code == 202
+    original_id = response["task_id"]
+    with server._task_db() as db:
+        db.execute("UPDATE tasks SET status='failed', result='{}', lifecycle='synced', credential_cleanup='deleted' WHERE task_id=?",
+                   (original_id,))
+
+    server._validate_repository.return_value = "coder"
+    code, retry = task_request("POST", f"/api/v1/tasks/{original_id}/retry", {"retry_key": "run-2"})
+    assert code == 202
+    with server._task_db() as db:
+        child = db.execute("SELECT role,payload,retry_of FROM tasks WHERE task_id=?", (retry["task_id"],)).fetchone()
+    assert child["role"] == "doc"
+    assert child["retry_of"] == original_id
+    assert json.loads(child["payload"])["task_role"] == "doc"
 
 
 def test_task_detail_exposes_only_safe_coordination_records(task_gateway):
@@ -171,6 +291,7 @@ def test_task_detail_exposes_only_safe_coordination_records(task_gateway):
     assert detail["events"][2]["reason"] is None
     assert "private plan" not in json.dumps(detail) and "secret review" not in json.dumps(detail)
     assert "private review text" not in json.dumps(detail)
+    assert detail["role"] == "coder"
 
 
 def test_worker_result_attempt_must_match_active_attempt(task_gateway):
@@ -515,8 +636,7 @@ def test_retry_preserves_history_and_uses_new_credentials(task_gateway, monkeypa
     result = {"task_id": task_id, "repo": "org/repo", "issue_number": 2, "status": "failed", "error": "validation-failed"}
     assert task_request("POST", f"/api/v1/tasks/{task_id}", result, callback="wrong-callback")[0] == 403
     assert task_request("POST", f"/api/v1/tasks/{task_id}", result, callback="new-callback-test-only")[0] == 400
-    assert task_request("POST", f"/api/v1/supervisor/tasks/{task_id}", result,
-                        token="supervisor-test-token")[0] == 200
+    assert finish_failed_task(task_gateway, monkeypatch, task_id)["status"] == "failed"
 
 
 def test_retry_replays_without_creating_another_job(task_gateway, monkeypatch):
@@ -859,6 +979,99 @@ def test_worker_candidate_is_durable_but_not_terminal(task_gateway):
     create_job.assert_not_called()
 
 
+def test_supervisor_completion_requires_current_claim_and_recorded_pr(task_gateway):
+    task_id = task_request("POST", "/api/v1/tasks/spawn", issue_payload())[1]["task_id"]
+    owner = "current-supervisor-owner"
+    pr_url = "https://github.com/org/repo/pull/42"
+    db = server._task_db()
+    db.execute("UPDATE tasks SET status='running',attempts=1,claim_owner=? WHERE task_id=?", (owner, task_id))
+    db.close()
+    terminal = {"task_id": task_id, "status": "completed", "pr_url": pr_url,
+                "claim_owner": "stale-supervisor-owner", "attempt": 1}
+    path = f"/api/v1/supervisor/tasks/{task_id}"
+    assert task_request("POST", path, terminal, token="supervisor-test-token")[0] == 409
+    terminal["claim_owner"] = owner
+    assert task_request("POST", path, terminal, token="supervisor-test-token")[0] == 409
+    db = server._task_db()
+    db.execute("UPDATE tasks SET pr_url=? WHERE task_id=?", (pr_url, task_id))
+    db.close()
+    assert task_request("POST", path, terminal, token="supervisor-test-token")[0] == 200
+    assert task_request("POST", path, terminal, token="supervisor-test-token")[0] == 200
+    db = server._task_db()
+    row = db.execute("SELECT status,result,claim_owner FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    events = db.execute("SELECT actor,action,outcome FROM task_events WHERE task_id=?", (task_id,)).fetchall()
+    db.close()
+    assert row["status"] == "completed" and row["claim_owner"] is None
+    assert "claim_owner" not in json.loads(row["result"]) and "attempt" not in json.loads(row["result"])
+    assert ("supervisor", "task", "completed") in [tuple(event) for event in events]
+    assert task_gateway[1].call_count == 0
+
+
+def test_manual_enqueue_runs_durable_graph_and_records_task_thread(task_gateway, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "supervisor"))
+    import supervisor as supervisor_module
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    task_id = task_request("POST", "/api/v1/tasks/spawn", issue_payload())[1]["task_id"]
+    candidate = {"status": "candidate", "attempt": 1, "validation": {"status": "passed"},
+                 "patch": "verified", "edits": [{"path": "src/change.py", "content": "value = 1\n"}]}
+    runtime = {"threshold": 0.8, "worker_inference_endpoints": [{"url": "http://worker/v1", "model": "model"}]}
+    open_supervisor_db = supervisor_module.task_database
+    monkeypatch.setattr(supervisor_module, "task_database", lambda: open_supervisor_db())
+    monkeypatch.setattr(supervisor_module, "_load_pinned_catalog", lambda *_args: ({"roles": {"coder": {}}}, runtime))
+    monkeypatch.setattr(supervisor_module, "_plan_task", AsyncMock(return_value="bounded plan"))
+
+    def dispatch(task, _runtime):
+        db = server._task_db()
+        db.execute("UPDATE tasks SET result=? WHERE task_id=?", (json.dumps(candidate), task["task_id"]))
+        db.close()
+        return "worker-" + task["task_id"]
+
+    async def judge(_task, _candidate, _runtime):
+        return 0.95, "Validated candidate."
+
+    def complete(completed_task_id, status, _runtime=None, **details):
+        code, result = task_request(
+            "POST", f"/api/v1/supervisor/tasks/{completed_task_id}",
+            {"task_id": completed_task_id, "status": status, **details}, token="supervisor-test-token",
+        )
+        assert code == 200
+        return result
+
+    monkeypatch.setattr(supervisor_module, "_dispatch_task", dispatch)
+    monkeypatch.setattr(supervisor_module, "_verified_candidate_patch", lambda _task, value: value)
+    monkeypatch.setattr(supervisor_module, "_judge_candidate", judge)
+    monkeypatch.setattr(supervisor_module, "_publish_candidate", lambda *_args: "https://github.com/org/repo/pull/42")
+    monkeypatch.setattr(supervisor_module, "_complete_via_gateway", complete)
+
+    assert asyncio.run(supervisor_module.SupervisorLoop().process_next_durable_task())
+    db = server._task_db()
+    row = db.execute("SELECT status,pr_url,result FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    checkpoint_path = supervisor_module.checkpoint_database_path(db, 1, 1)
+    events = db.execute("SELECT actor,action,outcome FROM task_events WHERE task_id=?", (task_id,)).fetchall()
+    db.close()
+    assert row["status"] == "completed" and row["pr_url"] == "https://github.com/org/repo/pull/42"
+    assert json.loads(row["result"])["pr_url"] == row["pr_url"]
+    assert ("judge", "review", "accepted") in [tuple(event) for event in events]
+    assert ("supervisor", "publish", "completed") in [tuple(event) for event in events]
+
+    async def read_checkpoint():
+        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as saver:
+            saved = await saver.aget_tuple({"configurable": {
+                "thread_id": task_id,
+            }})
+            assert saved is not None
+            assert saved.checkpoint["channel_values"]["task_id"] == task_id
+
+    asyncio.run(read_checkpoint())
+    checkpoint_db = sqlite3.connect(checkpoint_path)
+    try:
+        assert checkpoint_db.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id=?", (task_id,)).fetchone()[0] > 0
+    finally:
+        checkpoint_db.close()
+    assert task_gateway[1].call_count == 0
+
+
 @pytest.mark.parametrize("mode,address", [("local-http", "127.0.0.1"), ("edge-tls", "0.0.0.0")])
 def test_transport_server_binding(task_gateway, monkeypatch, mode, address):
     monkeypatch.delenv("MANAGEMENT_SERVICE_TOKEN")
@@ -915,7 +1128,7 @@ def test_repository_validation_errors_are_sanitized(monkeypatch, status, reason)
 ])
 def test_repository_validation_probes_with_only_originating_credential(monkeypatch, permission_metadata):
     github = Mock(side_effect=[{"full_name": "ORG/Repo", **permission_metadata}, [], [], [],
-                               {"number": 2, "html_url": "https://github.com/org/repo/issues/2"}])
+                               {"number": 2, "html_url": "https://github.com/org/repo/issues/2", "labels": []}])
     monkeypatch.setattr(server, "_github", github)
     server._validate_repository("org/repo", 2, "repo-test-only")
     assert [call.args[1] for call in github.call_args_list] == [
@@ -935,7 +1148,7 @@ def test_repository_validation_probes_with_only_originating_credential(monkeypat
 ])
 def test_repository_validation_requires_each_authenticated_probe(monkeypatch, probe_index, failure, reason):
     responses = [{"full_name": "org/repo", "permissions": {"pull": False}}, [], [], [],
-                 {"number": 2, "html_url": "https://github.com/org/repo/issues/2"}]
+                 {"number": 2, "html_url": "https://github.com/org/repo/issues/2", "labels": []}]
     responses[probe_index] = (OSError("repo-test-only") if failure == "transport" else
                               server.urllib.error.HTTPError("https://api.github.com", failure, "repo-test-only", {}, None))
     github = Mock(side_effect=responses)
@@ -1274,8 +1487,14 @@ def test_helm_pins_nonsecret_catalog_runtime_and_p40_routes(helm_values):
     assert not any(secret_name in data["runtime-config.json"] for secret_name in
                    ("openai-api-key", "pr-github-token", "coder-api-key", "supervisor-auth-token"))
     runtime = json.loads(data["runtime-config.json"])
-    assert runtime["coder_url"] == "http://inference-coder.inference-dev.svc.cluster.local:8000/v1"
-    assert runtime["judge_url"] == "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"
+    catalog_roles = yaml.safe_load(data["agent-roles.yaml"])["roles"]
+    assert catalog_roles["doc"]["endpoint_alias"] == "coder"
+    assert set(catalog_roles["doc"]["tools"]) == {
+        "repository_read", "candidate_edit", "sandbox_validation",
+    }
+    assert catalog_roles["judge"]["tools"] == ["candidate_review"]
+    assert runtime["coder_url"] == "http://inference-p40.inference-dev.svc.cluster.local:8000/v1"
+    assert runtime["judge_url"] == "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1"
     assert runtime["coder_native_download"] is True
     assert runtime["judge_native_download"] is True
     worker = worker_job_spec(documents)
@@ -1414,7 +1633,7 @@ def test_repository_validation_rejects_wrong_identity_or_archived_repository(mon
 def test_repository_validation_accepts_repository_write_access(monkeypatch):
     github = Mock(side_effect=[
         {"full_name": "org/repo", "permissions": {"pull": True, "push": True}},
-        [], [], [], {"number": 2, "html_url": "https://github.com/org/repo/issues/2"},
+        [], [], [], {"number": 2, "html_url": "https://github.com/org/repo/issues/2", "labels": []},
     ])
     monkeypatch.setattr(server, "_github", github)
     server._validate_repository("org/repo", 2, "repo-test-only")

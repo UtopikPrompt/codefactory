@@ -3,8 +3,8 @@ Worker configuration and mutable Job spec; the supervisor creates one Job per ta
 */}}
 {{- $judgeUrl := index .Values.supervisor.config "judge-url" -}}
 {{- $coderUrl := index .Values.supervisor.config "coder-url" -}}
-{{- $coderNative := eq $coderUrl "http://inference-coder.inference-dev.svc.cluster.local:8000/v1" -}}
-{{- $judgeNative := eq $judgeUrl "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1" -}}
+{{- $coderNative := eq $coderUrl "http://inference-p40.inference-dev.svc.cluster.local:8000/v1" -}}
+{{- $judgeNative := eq $judgeUrl "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1" -}}
 {{- if kindIs "bool" .Values.worker.coderNativeDownload -}}
 {{- $coderNative = .Values.worker.coderNativeDownload -}}
 {{- end -}}

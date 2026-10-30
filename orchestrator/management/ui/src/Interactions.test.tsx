@@ -31,6 +31,20 @@ test('shows actual dispatch, candidate validation and score, including zero', ()
     expect(within(activity).getByText('Result reporting failed.')).toBeInTheDocument()
 })
 
+test('uses the pinned documentation role for candidate events', () => {
+    render(<Interactions task={{
+        ...task, role: 'doc', events: [{
+            timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate',
+            outcome: 'returned', reason: null, validation_status: 'passed', score: null, review_topics: [], failure_details: null
+        }],
+    }} />)
+    const activity = screen.getByRole('list', { name: 'Recorded agent activity' })
+    expect(within(activity).getByRole('heading', { name: 'Documentation worker → supervisor' })).toBeInTheDocument()
+    const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
+    expect(within(flow).getByText('Documentation worker returned a candidate')).toBeInTheDocument()
+    expect(within(flow).getByText('Attempt 1 · Documentation (worker)')).toBeInTheDocument()
+})
+
 test('retained retry feedback is not presented as current activity or full history', () => {
     const { rerender } = render(<Interactions task={{
         ...task, attempts: 2,

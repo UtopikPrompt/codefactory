@@ -1,3 +1,4 @@
 -r requirements.txt
+-r ../supervisor/requirements-test.txt
 pytest
 PyYAML>=6,<7

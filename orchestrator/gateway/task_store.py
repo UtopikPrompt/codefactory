@@ -16,17 +16,20 @@ def connect_task_database(path, init_lock):
         db.execute("""CREATE TABLE IF NOT EXISTS tasks (
             task_id TEXT PRIMARY KEY, repo TEXT, issue INTEGER, status TEXT NOT NULL,
             payload TEXT NOT NULL, result TEXT, job TEXT, lifecycle TEXT NOT NULL DEFAULT 'pending',
-            sync_started REAL NOT NULL DEFAULT 0)""")
+            sync_started REAL NOT NULL DEFAULT 0, role TEXT NOT NULL DEFAULT 'coder',
+            pr_url TEXT, judge_review TEXT)""")
         columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
         for name in ("credential_ref", "credential_uid", "callback_hash", "retry_of", "retry_key"):
             if name not in columns:
                 db.execute(f"ALTER TABLE tasks ADD COLUMN {name} TEXT")
         if "credential_cleanup" not in columns:
             db.execute("ALTER TABLE tasks ADD COLUMN credential_cleanup TEXT NOT NULL DEFAULT 'retained'")
+        if "role" not in columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN role TEXT NOT NULL DEFAULT 'coder'")
         for name, declaration in (("attempts", "INTEGER NOT NULL DEFAULT 0"),
                                   ("claim_owner", "TEXT"), ("claimed_at", "REAL"),
                                   ("config_version", "TEXT"), ("config_hash", "TEXT"), ("plan", "TEXT"),
-                                  ("retry_feedback", "TEXT")):
+                                  ("retry_feedback", "TEXT"), ("pr_url", "TEXT"), ("judge_review", "TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS task_retry_parent ON tasks(retry_of) WHERE retry_of IS NOT NULL")

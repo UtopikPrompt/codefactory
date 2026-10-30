@@ -278,7 +278,7 @@ def test_namespace_is_not_a_chart_value():
 
 
 def test_judge_url_and_review_margin_render():
-    default_url = "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"
+    default_url = "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1"
     cases = [(None, default_url, True, 0.1, 0.1),
              ("http://judge.example.test/v1",
               "http://judge.example.test/v1", False, 0.25, 0.25)]
@@ -300,7 +300,7 @@ def test_judge_url_and_review_margin_render():
         assert runtime["judge_review_margin"] == expected_margin
         assert runtime["worker_parallelism"] == 1
         assert runtime["worker_inference_endpoints"] == [{
-            "url": "http://inference-coder.inference-dev.svc.cluster.local:8000/v1",
+            "url": "http://inference-p40.inference-dev.svc.cluster.local:8000/v1",
             "model": runtime["coder_model"],
         }]
 
@@ -308,11 +308,24 @@ def test_judge_url_and_review_margin_render():
 def test_worker_endpoint_contract_rejects_mismatched_values():
     base = yaml.safe_load((CHART / "values.yaml").read_text())
     config = base["supervisor"]["config"]
+    single_service_values = yaml.safe_load((CHART / "values.yaml").read_text())
+    single_service_values["supervisor"]["config"]["worker-parallelism"] = 2
+    single_service_render = subprocess.run(
+        ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator", "--values", "-"],
+        input=yaml.safe_dump(single_service_values), capture_output=True, text=True, check=False,
+    )
+    assert single_service_render.returncode == 0, single_service_render.stderr
+    documents = [document for document in yaml.safe_load_all(single_service_render.stdout) if document]
+    catalog = next(document for document in documents if document["kind"] == "ConfigMap"
+                   and document["metadata"]["name"].startswith("orchestrator-agent-catalog-"))
+    runtime = json.loads(catalog["data"]["runtime-config.json"])
+    assert runtime["worker_parallelism"] == 2
+    assert len(runtime["worker_inference_endpoints"]) == 1
     cases = [
         ({"worker-inference-endpoints": [{
-            "url": "http://inference-coder.inference-dev.svc.cluster.local:8000/v1", "model": "other-model",
+            "url": "http://inference-p40.inference-dev.svc.cluster.local:8000/v1", "model": "other-model",
         }]}, "model aliases must match"),
-        ({"worker-parallelism": 2}, "cannot exceed worker-inference-endpoints count"),
+        ({"worker-parallelism": 3}, "maximum: got 3, want 2"),
         ({"coder-url": "http://unlisted.inference.svc.cluster.local:8000/v1"},
          "must include the effective coder URL"),
         ({"worker-inference-endpoints": [
@@ -675,7 +688,7 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
             "--set", "management.enabled=true",
             "--set", "supervisor.config.coder-model=chart-coder-model",
             "--set-json",
-            'supervisor.config.worker-inference-endpoints=[{"url":"http://inference-coder.inference-dev.svc.cluster.local:8000/v1","model":"chart-coder-model"}]',
+            'supervisor.config.worker-inference-endpoints=[{"url":"http://inference-p40.inference-dev.svc.cluster.local:8000/v1","model":"chart-coder-model"}]',
         ],
         check=True, capture_output=True, text=True,
     )

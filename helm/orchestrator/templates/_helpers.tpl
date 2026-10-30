@@ -1,28 +1,40 @@
 {{- define "orchestrator.agentRuntimeConfigJson" -}}
 {{- $coderUrl := index .Values.supervisor.config "coder-url" -}}
-{{- $coderNative := eq $coderUrl "http://inference-coder.inference-dev.svc.cluster.local:8000/v1" -}}
+{{- $coderNative := eq $coderUrl "http://inference-p40.inference-dev.svc.cluster.local:8000/v1" -}}
 {{- if kindIs "bool" .Values.worker.coderNativeDownload -}}
 {{- $coderNative = .Values.worker.coderNativeDownload -}}
 {{- end -}}
-{{- $judgeNative := eq (index .Values.supervisor.config "judge-url") "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1" -}}
+{{- $judgeNative := eq (index .Values.supervisor.config "judge-url") "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1" -}}
 {{- if kindIs "bool" .Values.worker.judgeNativeDownload -}}
 {{- $judgeNative = .Values.worker.judgeNativeDownload -}}
 {{- end -}}
 {{- $runtimeConfig := .Values.supervisor.config -}}
 {{- $workerEndpoints := index $runtimeConfig "worker-inference-endpoints" -}}
 {{- $workerParallelism := int (index $runtimeConfig "worker-parallelism") -}}
-{{- if gt $workerParallelism (len $workerEndpoints) -}}
-{{- fail "supervisor.config.worker-parallelism cannot exceed worker-inference-endpoints count" -}}
+{{- if or (lt (len $workerEndpoints) 1) (gt (len $workerEndpoints) 2) -}}
+{{- fail "supervisor.config.worker-inference-endpoints must contain one or two endpoints" -}}
+{{- end -}}
+{{- if or (lt $workerParallelism 1) (gt $workerParallelism 2) -}}
+{{- fail "supervisor.config.worker-parallelism must be between one and two" -}}
 {{- end -}}
 {{- $coderUrlConfigured := false -}}
+{{- $workerEndpointUrls := dict -}}
 {{- range $endpoint := $workerEndpoints -}}
-{{- if eq (index $endpoint "url") $coderUrl -}}
+{{- $endpointUrl := index $endpoint "url" -}}
+{{- if not (regexMatch "^https?://[^/?#@]+/v1$" $endpointUrl) -}}
+{{- fail "worker-inference-endpoints URLs must be valid HTTP(S) /v1 URLs" -}}
+{{- end -}}
+{{- if hasKey $workerEndpointUrls $endpointUrl -}}
+{{- fail "worker-inference-endpoints URLs must be unique" -}}
+{{- end -}}
+{{- $_ := set $workerEndpointUrls $endpointUrl true -}}
+{{- if eq $endpointUrl $coderUrl -}}
 {{- $coderUrlConfigured = true -}}
 {{- end -}}
 {{- if ne (index $endpoint "model") (index $runtimeConfig "coder-model") -}}
 {{- fail "worker-inference-endpoints model aliases must match supervisor.config.coder-model" -}}
 {{- end -}}
-{{- if eq (index $endpoint "url") (index $runtimeConfig "judge-url") -}}
+{{- if eq $endpointUrl (index $runtimeConfig "judge-url") -}}
 {{- fail "worker-inference-endpoints must remain separate from the judge review URL" -}}
 {{- end -}}
 {{- end -}}

@@ -9,6 +9,14 @@ roles:
     output_contract: [ task_id, role, patch, edits, validation, base_branch, base_sha ]
     endpoint_alias: coder
     max_files: 8
+  doc:
+    id: doc
+    instructions: "Create or update repository documentation only. Prefer Markdown files under docs/ and the approved root Markdown guides. Do not edit source, tests, configuration, workflows, or dependencies; do not judge or publish."
+    tools: [ repository_read, candidate_edit, sandbox_validation ]
+    input_contract: [ task_id, repo, issue_number, issue_title ]
+    output_contract: [ task_id, role, patch, edits, validation, base_branch, base_sha ]
+    endpoint_alias: coder
+    max_files: 8
   judge:
     id: judge
     instructions: "Evaluate candidate patch and validation evidence; do not edit files or publish."

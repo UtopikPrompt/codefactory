@@ -17,7 +17,7 @@ EVENT_REASONS = {
     "pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",
     "pr-publication-credential-required", "candidate-publish-data-missing", "base-branch-changed",
     "existing-task-branch-conflict", "existing-pr-policy-conflict", "pr-creation-unverified", "pr-identity-invalid",
-    "judge-rejected",
+    "judge-rejected", "checkpoint-store-unavailable",
 }
 EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
 FAILURE_DETAIL_CODES = {
@@ -152,7 +152,7 @@ class TaskAPI:
         try:
             total = db.execute("SELECT COUNT(*) FROM tasks" + where, parameters).fetchone()[0]
             rows = db.execute(
-                "SELECT task_id, repo, issue AS issue_number, status, lifecycle, credential_cleanup, "
+                "SELECT task_id, repo, issue AS issue_number, status, role, lifecycle, credential_cleanup, "
                 "retry_of, attempts, config_version, config_hash FROM tasks" + where +
                 " ORDER BY rowid DESC LIMIT ? OFFSET ?", [*parameters, limit, offset]).fetchall()
             handler._json(200, {"tasks": [dict(row) for row in rows], "total": total,
@@ -186,6 +186,7 @@ class TaskAPI:
             handler._json(200, {
                 "task_id": task["task_id"], "repo": task["repo"], "issue_number": task["issue"],
                 "status": task["status"], "result": gateway.json.loads(task["result"]) if task["result"] else None,
+                "role": task["role"] if task["role"] in ("coder", "doc") else "coder",
                 "lifecycle": task["lifecycle"], "credential_cleanup": task["credential_cleanup"],
                 "retry_of": task["retry_of"], "attempts": task["attempts"],
                 "config_version": task["config_version"], "config_hash": task["config_hash"],
@@ -225,9 +226,9 @@ class TaskAPI:
             return
         original.pop("task_id", None)
         original.pop("repository_auth")
-        self.spawn(original, retry_of=task["task_id"], retry_key=payload["retry_key"])
+        self.spawn(original, retry_of=task["task_id"], retry_key=payload["retry_key"], inherited_role=task["role"])
 
-    def spawn(self, payload, retry_of=None, retry_key=None):
+    def spawn(self, payload, retry_of=None, retry_key=None, inherited_role=None):
         gateway, handler = self.gateway, self.handler
         gateway._reject_credentials(payload, handler.headers.get("Authorization", "").removeprefix("Bearer "))
         if "repository_auth" in payload:
@@ -252,12 +253,20 @@ class TaskAPI:
             gateway._github_app().authorize_user(repo, user_token)
         token = gateway._github_app().mint(repo)["token"]
         gateway._reject_credentials(payload, token)
-        gateway._validate_repository(repo, issue, token)
+        validated_role = gateway._validate_repository(repo, issue, token)
+        if validated_role not in ("coder", "doc"):
+            raise gateway.CredentialError("repository-validation-unavailable")
+        task_role = inherited_role if retry_of else validated_role
+        if task_role not in ("coder", "doc"):
+            raise ValueError("task-role-invalid")
         task_id = "issue-" + gateway.hashlib.sha256(f"{repo.lower()}#{issue}".encode()).hexdigest()[:32] if issue else gateway.uuid.uuid4().hex
         if retry_of:
             task_id = "issue-" + gateway.hashlib.sha256(f"retry:{retry_of}:{retry_key}".encode()).hexdigest()[:32]
         assigned = gateway.copy.deepcopy(payload)
+        assigned.pop("role", None)
+        assigned.pop("task_role", None)
         assigned["task_id"] = task_id
+        assigned["task_role"] = task_role
         assigned["repository_auth"] = "github-app"
         if repo:
             assigned["repo"] = repo
@@ -300,10 +309,15 @@ class TaskAPI:
                 db.rollback()
                 handler._json(503, {"error": "agent-config-unavailable"})
                 return
+            available_roles = {agent["role"] for agent in gateway.agent_config.public_config(config)["agents"]}
+            if task_role not in available_roles:
+                db.rollback()
+                handler._json(503, {"error": "agent-role-unavailable"})
+                return
             config_version, config_hash = config["config_version"], config["config_hash"]
-            db.execute("INSERT INTO tasks(task_id,repo,issue,status,payload,credential_ref,callback_hash,retry_of,retry_key,config_version,config_hash,retry_feedback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO tasks(task_id,repo,issue,status,payload,credential_ref,callback_hash,retry_of,retry_key,config_version,config_hash,retry_feedback,role) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (task_id, repo, issue, "queued", gateway.json.dumps(assigned), credential_ref, gateway.hashlib.sha256(callback.encode()).hexdigest(),
-                        retry_of, retry_key, config_version, config_hash, parent["retry_feedback"] if retry_of else None))
+                        retry_of, retry_key, config_version, config_hash, parent["retry_feedback"] if retry_of else None, task_role))
             db.commit()
             try:
                 credential_uid = gateway._create_task_secret(task_id, repo, callback)
@@ -440,8 +454,13 @@ class TaskAPI:
         task_id = gateway.urlsplit(handler.path).path.removeprefix("/api/v1/supervisor/tasks/")
         if not gateway.re.fullmatch(r"[A-Za-z0-9_.-]{1,63}", task_id):
             raise ValueError("invalid-task-id")
+        claim_owner = payload.pop("claim_owner", None)
+        claim_attempt = payload.pop("attempt", None)
         if payload.get("task_id") != task_id or payload.get("status") not in ("completed", "failed"):
             raise ValueError("invalid-supervisor-result")
+        if (not isinstance(claim_owner, str) or not claim_owner or len(claim_owner) > 256
+                or type(claim_attempt) is not int or not 1 <= claim_attempt <= 8):
+            raise ValueError("invalid-supervisor-claim")
         if payload["status"] == "completed" and not gateway.re.fullmatch(
                 r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*",
                 payload.get("pr_url", ""), gateway.re.IGNORECASE):
@@ -456,12 +475,28 @@ class TaskAPI:
                 handler._json(404, {"error": "task-not-found"})
                 return
             result = gateway.json.dumps(payload, sort_keys=True)
-            if task["status"] in ("completed", "failed") and task["result"] != result:
+            if task["status"] in ("completed", "failed"):
                 db.commit()
-                handler._json(409, {"error": "terminal-result-conflict"})
+                if task["result"] == result:
+                    lifecycle = gateway._retry_lifecycle(task_id)
+                    handler._json(200, {"task_id": task_id, "status": payload["status"],
+                                        "lifecycle": lifecycle})
+                else:
+                    handler._json(409, {"error": "terminal-result-conflict"})
                 return
-            db.execute("UPDATE tasks SET status=?, result=?, claim_owner=NULL, claimed_at=NULL WHERE task_id=?",
-                       (payload["status"], result, task_id))
+            if (task["status"] != "running" or task["claim_owner"] != claim_owner
+                    or task["attempts"] != claim_attempt):
+                db.commit()
+                handler._json(409, {"error": "task-claim-lost"})
+                return
+            if payload["status"] == "completed" and task["pr_url"] != payload["pr_url"]:
+                db.commit()
+                handler._json(409, {"error": "pr-publication-unverified"})
+                return
+            db.execute("""UPDATE tasks SET status=?, result=?, claim_owner=NULL, claimed_at=NULL
+                WHERE task_id=? AND status='running' AND claim_owner=? AND attempts=?""",
+                       (payload["status"], result, task_id, claim_owner, claim_attempt))
+            append_event(db, task_id, claim_attempt, "supervisor", "task", payload["status"])
             db.commit()
             lifecycle = gateway._retry_lifecycle(task_id)
             handler._json(200, {"task_id": task_id, "status": payload["status"], "lifecycle": lifecycle})

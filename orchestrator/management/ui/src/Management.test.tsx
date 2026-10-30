@@ -61,6 +61,29 @@ test('opens task details inline and preserves task routes', async () => {
     await waitFor(() => expect(calls.some(([url]) => url.includes('status=running'))).toBe(true))
 })
 
+test('shows the server-selected documentation role and names its candidate events', async () => {
+    taskResponse = { tasks: [{ ...task, role: 'doc' }], total: 1, limit: 25, offset: 0 }
+    taskDetailResponse = {
+        ...task, role: 'doc', attempts: 1, events: [{
+            timestamp: 1760000000, attempt: 1, actor: 'worker',
+            action: 'candidate', outcome: 'returned', reason: null, validation_status: 'passed',
+            score: null, review_topics: [], failure_details: null
+        }],
+    }
+    const user = userEvent.setup()
+    mount()
+    expect(await screen.findByRole('columnheader', { name: 'Role' })).toBeInTheDocument()
+    expect(await screen.findByText('Documentation')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Expand task task-1' }))
+    const detail = await screen.findByRole('region', { name: 'Task detail for task-1' })
+    expect(within(detail).getByText('Documentation')).toBeInTheDocument()
+    const activity = within(detail).getByRole('list', { name: 'Recorded agent activity' })
+    expect(within(activity).getByRole('heading', { name: 'Documentation worker → supervisor' })).toBeInTheDocument()
+    const flow = within(detail).getByRole('list', { name: 'Recorded execution flow, newest first' })
+    expect(within(flow).getByText('Documentation worker returned a candidate')).toBeInTheDocument()
+    expect(within(flow).getByText('Attempt 1 · Documentation (worker)')).toBeInTheDocument()
+})
+
 test('copies the task name to the clipboard', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }))

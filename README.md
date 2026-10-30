@@ -98,14 +98,15 @@ those endpoints.
 `supervisor.config.worker-inference-endpoints` explicitly lists the inference
 URLs available to worker Jobs and the model alias each serves. Every alias must
 match `coder-model`; the effective `coder-url` must be a pool member, and the
-pool must contain one or two distinct endpoints. `worker-parallelism` bounds
-independent task attempts and cannot exceed the endpoint count. The default is
-one endpoint and one task at a time. The UtopikLab dev profile opts into two
-tasks with the GPU coder and GPU judge endpoints, which share the configured
-model alias. `judge-url` remains independent: dev reviews continue to use the
-CPU judge endpoint. Endpoint selection is round-robin per task dispatch; a task
-still creates one worker Job, one candidate, and follows the existing judge
-and publication path.
+pool must contain one or two distinct URLs. `worker-parallelism` independently
+bounds concurrent task attempts from one to two; a single load-balanced Service
+can serve both attempts when it has multiple backend replicas. The default is
+one endpoint and one task at a time. The UtopikLab dev profile uses one GPU
+coder Service URL with two GPU replicas and opts into two concurrent tasks.
+`judge-url` remains independent: dev reviews continue to use the CPU judge
+endpoint. Endpoint selection is round-robin across configured URLs per task
+dispatch; a task still creates one worker Job, one candidate, and follows the
+existing judge and publication path.
 
 Task-state storage defaults to a chart-created 1Gi PVC or uses
 `gateway.persistence.existingClaim`. For explicitly approved static local storage,

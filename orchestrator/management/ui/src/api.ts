@@ -3,6 +3,7 @@ export interface Task {
     repo: string | null
     issue_number: number | null
     status: string
+    role?: 'coder' | 'doc' | null
     lifecycle?: string
     credential_cleanup?: string
     attempts?: number

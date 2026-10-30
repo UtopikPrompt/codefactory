@@ -10,7 +10,8 @@
 **One-line summary:** Turn `k8s-node01` into an always-on, autonomous AI software
 factory — a Qwen2.5 **supervisor/judge** on P40-1 orchestrates CPU **worker
 Jobs** using the Qwen2.5 coder endpoint on P40-0 via a LangGraph state machine, evaluates and picks the best
-output, retries on failure, and opens a PR through a human-review gate. Runs
+output, allows up to 8 judge rejections per planned DAG-step work item within
+each sub-issue, and opens a PR through a human-review gate. Runs
 continuously 24/7 as a resident service, independent of VS Code, monitored
 through the selected central Prometheus + Grafana on TrueNAS and iDRAC telemetry.
 
@@ -229,17 +230,21 @@ flowchart TB
     w -->|candidate outputs + validation evidence| eval
     eval --> pick
     pick -->|best passes acceptance| gate
-    pick -->|best FAILS; within retry limit| plan
+    pick -->|judge rejects work item; budget remains| dispatch
+    pick -->|eighth judge rejection| exhausted[Stop retries for this work item; surface exhausted budget]
     gate -->|publish selected result| PR["Open PR"]
 ```
 
 **Loop semantics (design intent):** the supervisor plans and decomposes the
 task, selects specialized roles, and dispatches bounded worker Jobs. Workers
 return candidate outputs and validation evidence. The supervisor judges and
-selects the best candidate, or creates a fresh plan and retries within the
-configured maximum. For a passing candidate, the supervisor publishes a PR and
-waits at the human review gate. See §8 for the confirmed iteration limit and
-worker-count policy `N`.
+selects the best candidate. A judge rejection may retry the same planned
+DAG-step work item while its per-object budget remains; the eighth rejection
+stops automatic retries for that object and surfaces the exhausted budget. This
+is not an 8-iteration cap across the entire issue, and exhaustion does not imply
+automatic replanning. For a passing candidate, the supervisor publishes a PR
+and waits at the human review gate. See §8 for the confirmed per-object
+rejection limit and worker-count policy `N`.
 
 ### 2.3 Specialized-agent architecture
 
@@ -249,7 +254,7 @@ loop** in which each role gets the model best suited to that task:
 
 | Role | Purpose | Preferred model profile | Why |
 | :--- | :--- | :--- | :--- |
-| **Supervisor / planner** | Reads the issue, decomposes the task, chooses the strategy, sets iteration budget, selects worker roles, dispatches Jobs, and owns final selection and publication | approved Qwen2.5-Coder-7B model, used for planning and tool selection | good at planning, judgment, and tool selection |
+| **Supervisor / planner** | Reads the issue, decomposes the task, chooses the strategy, tracks per-object judge-rejection budgets, selects worker roles, dispatches Jobs, and owns final selection and publication | approved Qwen2.5-Coder-7B model, used for planning and tool selection | good at planning, judgment, and tool selection |
 | **Coder workers** | Make the actual repo edits, run targeted validation, and produce patch candidates | approved Qwen2.5-Coder-7B coder endpoint | good at direct code generation and narrow test-driven edits |
 | **Judge / reviewer** | Provides rubric-based candidate assessments and regression findings to the supervisor; the supervisor makes the final selection | approved Qwen2.5-Coder-7B model, focused on rubric-based evaluation | better at comparing competing outputs than generating them |
 | **Verifier / test runner** | Executes focused build/test commands and returns validation evidence for supervisor review | deterministic shell/tooling | this role is about validation and signal collection, not creative synthesis |
@@ -269,7 +274,8 @@ publication and the human gate.
 2. bounded **worker Jobs** produce candidate patches and report validation
   evidence;
 3. the **supervisor** judges candidates against the acceptance rubric, selects
-  the result, and retries within the configured limit when needed;
+  the result, and retries a rejected planned DAG-step work item within its fixed
+  per-object limit when needed;
 4. specialized validation or summary roles may provide evidence or draft
   material, but the **supervisor** controls PR publication and the human gate.
 
@@ -325,7 +331,7 @@ Every decision is tagged. `CONFIRMED` = approved target-design choice.
 | # | Decision | Tag | Choice | Key reasoning / open question |
 | :--- | :--- | :--- | :--- | :--- |
 | 1 | **Two-brain split** | ✅ CONFIRMED | P40-0 = Qwen2.5 **coder** (llama.cpp); P40-1 = Qwen2.5 **judge/supervisor** (llama.cpp). Same model family so the judge is meaningful. | VRAM fit: 2× 7B Q4_K_M (~4.68 GB each) fit on **separate** P40s, ~18 GB spare per card. |
-| 2 | **Orchestration framework** | ✅ CONFIRMED | **LangGraph** state machine for the loop. | Supervisor plans/decomposes → selects roles and dispatches bounded Jobs → workers return candidate patches and validation evidence → supervisor judges/selects, retries within limit, and controls PR publication (human gate). |
+| 2 | **Orchestration framework** | ✅ CONFIRMED | **LangGraph** state machine for the loop. | Supervisor plans/decomposes → selects roles and dispatches bounded Jobs → workers return candidate patches and validation evidence → supervisor judges/selects, retries rejected work items within the fixed per-object limit, and controls PR publication (human gate). |
 | 3 | **Always-on vs scheduled** | ✅ CONFIRMED | **Always-on `Deployment`** (not CronJob). | Must be ready the instant a task arrives; survives restarts with persistent state. |
 | 4 | **Agent runtime independence** | ✅ CONFIRMED | The always-on agent runtime has its own tool-calling and is **independent of VS Code and VS Code extensions**. | The agent must operate as a resident service without an editor session or editor-specific tools. |
 | 5 | **Separate desktop interactive-chat workload** | ✅ CONFIRMED | RTX 3080 10 GB with **Ornith-1.5-9B-GGUF, 64K context**. | This separate workload is outside the target agent architecture and does not constrain either P40 endpoint. |
@@ -484,7 +490,7 @@ it is not a deployment-status report.
 | `inference` | Coder inference endpoint — Qwen2.5-Coder-7B-Instruct-GGUF @ Q4_K_M, 32K | Provides code-generation inference to worker Jobs | P40-0 |
 | `inference` | Judge inference endpoint — Qwen2.5-Coder-7B-Instruct-GGUF @ Q4_K_M, 32K | Provides judge inference to the supervisor | P40-1 |
 | `orchestrator` | Task gateway | Authenticates, validates, registers, and hands off tasks; reports lifecycle status; does not create Jobs | CPU service |
-| `orchestrator` | LangGraph supervisor runtime | Plans/decomposes tasks, chooses roles, dispatches bounded Jobs, judges/selects candidates, retries within limits, and controls PR/human gate | Always-on CPU Deployment; uses judge endpoint |
+| `orchestrator` | LangGraph supervisor runtime | Plans/decomposes tasks, chooses roles, dispatches bounded Jobs, judges/selects candidates, retries rejected work items within the fixed per-object limit, and controls PR/human gate | Always-on CPU Deployment; uses judge endpoint |
 | `orchestrator` | Bounded worker Jobs | Execute assigned coding roles; return candidate patches and validation evidence | On-demand CPU Jobs; use coder endpoint |
 | `monitoring` | `node-exporter` | Exposes host CPU, memory, GPU, disk, and I/O telemetry to central Prometheus | Node-level |
 | `monitoring` | iDRAC IPMI telemetry integration (`ipmi_exporter` or Grafana IPMI plugin) | Exposes PERC array, cache battery, drive/SMART, temperature, fan, power, and event telemetry | iDRAC management network |
@@ -501,7 +507,7 @@ it is not a deployment-status report.
 | **1. Plan** | CPU supervisor (uses P40-1 judge endpoint) | → emit plan, spawn workers | regenerate plan, retry (bounded) |
 | **2. Execute** | CPU worker Jobs (use coder endpoint on P40-0) | → emit output | mark worker failed, continue others |
 | **3. Evaluate** | CPU supervisor (uses P40-1 judge endpoint) | → score each output | re-score; may re-run evaluation |
-| **4. Pick BEST** | CPU supervisor (uses P40-1 judge endpoint) | → choose best, check acceptance | if best fails → iterate loop |
+| **4. Pick BEST** | CPU supervisor (uses P40-1 judge endpoint) | → choose best, check acceptance | judge rejection → retry same work item within its budget; otherwise surface exhausted budget |
 | **5. Gate** | CPU supervisor (uses P40-1 judge endpoint) | → open PR, wait for human | do not merge; escalate to human |
 
 
@@ -513,14 +519,18 @@ stateDiagram-v2
     Evaluate --> PickBest: score each
     PickBest --> Gate: best passes acceptance
     Gate --> [*]: open PR (human gate)
-    PickBest --> Plan: best FAILS → iterate (bounded)
+    PickBest --> Execute: judge rejects work item; budget remains
+    PickBest --> [*]: eighth judge rejection; surface exhausted budget
 ```
 
 ### 6.2 Failure handling & retries
 
-- **Bounded retries:** the loop iterates a fixed maximum number of times
-  (configurable). Each iteration is a fresh plan + fresh workers — no infinite
-  loop.
+- **Fixed per-object rejection budget:** an object is one planned DAG-step work
+  item within one sub-issue. The judge may reject that same object up to 8 times;
+  count judge rejections for the object, not total issue-loop iterations. This is
+  not an 8-iteration cap across the entire issue. After the eighth rejection,
+  stop automatic retries for that object and surface the exhausted budget. No
+  automatic replanning is implied by exhaustion.
 - **Per-worker isolation:** a failing worker does not block the others; the
   supervisor evaluates whatever each produced.
 - **Acceptance check** gates "success": the best output must pass a definition-of-
@@ -608,12 +618,12 @@ Target controller: **BMC-managed storage/thermal/power telemetry**.
 | O2 | **Judge/supervisor model + context window** | Validate that the judge endpoint uses the approved model and context on P40-1. | **RESOLVED — same Qwen2.5-Coder family (judge = Qwen2.5-Coder-7B), same VRAM fit (@ Q4_K_M on the P40). Context window locked at 32K (32768), matching the coder.** |
 | O3 | **Controller telemetry transport** | Validate the selected IPMI telemetry connectivity and monitoring integration. | **RESOLVED — use the IPMI telemetry path where available; monitoring ingest is IPMI-based via `ipmi_exporter` / Grafana IPMI plugin.** |
 | O4 | **Human gate policy** | Which PR trigger, reviewer, allowed branches, how the gate is enforced. | **CONFIRMED — human gate via Pull Request (open the agent's work as a PR for human review). Agents may use a **git worktree** if that is more efficient.** |
-| O5 | **Max loop iterations** | Bounds the retry budget and autonomous runtime. | **CONFIRMED — 8 loop iterations (auto-tune if possible).** |
+| O5 | **Per-object judge-rejection limit** | Bounds retries for one planned DAG-step work item within one sub-issue. | **CONFIRMED — fixed at 8 judge rejections per object; count judge rejections, not total issue-loop iterations. After the eighth rejection, stop automatic retries for that object and surface the exhausted budget. This is not an 8-iteration cap across the entire issue; exhaustion does not imply automatic replanning.** |
 | O6 | **Worker count N** | Parallelism budget vs CPU `limits`. | **CONFIRMED — auto-tune if possible (worker count N to be tuned vs the ~10-core CPU budget / CPU `limits`).** |
 | O7 | **Tool set for the always-on agent** | Limit capabilities to the tools needed for each role (file operations, git, validation, and controlled PR operations). | **RESOLVED — use the minimum necessary tools with specialized, role-based agents where useful.** |
 | O8 | **LangGraph runtime image / deps** | Select and validate the runtime that hosts the supervisor and its tool-calling. | **STILL-OPEN (research needed) — identify and pin the LangGraph runtime image and dependencies during design validation.** |
 
-**Summary:** O1/O2 **resolved** — model is **Qwen2.5-Coder-7B-Instruct-GGUF @ Q4_K_M (~4.68 GB, fits comfortably on one 23 GB P40)** and the context window is **locked at 32K (32768)** for both brains (VRAM fit is not the gate — both 7B models fit a P40 with ~18 GB spare). O3 resolved — use the selected **IPMI telemetry path** via `ipmi_exporter` / Grafana IPMI plugin. O4 confirmed — **human gate via PR** (agents may use a git worktree if more efficient). O5 confirmed at **8 loop iterations (auto-tune if possible)**. O6 confirmed — **auto-tune if possible**. O7 resolved — **minimum necessary tools with specialized/role-based agents**. O8 remains a design-validation item: select and pin the LangGraph runtime image and dependencies. O1–O7 are resolved; no implementation is authorized by this approval.
+**Summary:** O1/O2 **resolved** — model is **Qwen2.5-Coder-7B-Instruct-GGUF @ Q4_K_M (~4.68 GB, fits comfortably on one 23 GB P40)** and the context window is **locked at 32K (32768)** for both brains (VRAM fit is not the gate — both 7B models fit a P40 with ~18 GB spare). O3 resolved — use the selected **IPMI telemetry path** via `ipmi_exporter` / Grafana IPMI plugin. O4 confirmed — **human gate via PR** (agents may use a git worktree if more efficient). O5 confirmed at a **fixed 8 judge rejections per planned DAG-step work item within one sub-issue**, not 8 iterations across the issue; the eighth rejection stops automatic retries for that object and surfaces the exhausted budget, without implying automatic replanning. O6 confirmed — **auto-tune if possible**. O7 resolved — **minimum necessary tools with specialized/role-based agents**. O8 remains a design-validation item: select and pin the LangGraph runtime image and dependencies. O1–O7 are resolved; no implementation is authorized by this approval.
 
 ---
 
@@ -624,8 +634,11 @@ Target controller: **BMC-managed storage/thermal/power telemetry**.
   Prometheus; confirm the dashboard requirements in Grafana.
 3. Record the PR trigger, reviewer, and allowed-branch policy for the confirmed
   human review gate.
-4. Validate the bounded retry limit of 8 iterations and the worker-count tuning
-  policy against the approved CPU limits.
+4. Validate that the fixed limit is 8 judge rejections per planned DAG-step work
+  item within one sub-issue, not 8 total issue-loop iterations; confirm automatic
+  retries stop and the exhausted budget is surfaced after the eighth rejection,
+  with no automatic replanning implied by exhaustion. Validate the worker-count
+  tuning policy against the approved CPU limits.
 5. Select and pin the LangGraph runtime image and dependencies (O8), and finalize
   the minimal role-based tool set (O7).
 

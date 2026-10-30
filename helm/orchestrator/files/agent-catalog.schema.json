@@ -19,11 +19,15 @@
             "type": "object",
             "required": [
                 "coder",
+                "doc",
                 "judge"
             ],
             "additionalProperties": false,
             "properties": {
                 "coder": {
+                    "$ref": "#/$defs/role"
+                },
+                "doc": {
                     "$ref": "#/$defs/role"
                 },
                 "judge": {

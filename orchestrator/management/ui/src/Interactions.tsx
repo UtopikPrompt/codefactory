@@ -45,11 +45,15 @@ const eventReasons: Record<string, string> = {
     'judge-rejected': 'The judge scored the candidate below the acceptance threshold.',
 }
 
-function eventTitle(event: OperationalEvent) {
+function workerName(role: Task['role']) {
+    return role === 'doc' ? 'Documentation worker' : 'Coder worker'
+}
+
+function eventTitle(event: OperationalEvent, role: Task['role']) {
     if (event.action === 'claim') return 'Supervisor claimed this attempt'
     if (event.action === 'plan') return event.outcome === 'reused' ? 'Saved plan reused' : 'Plan recorded'
     if (event.action === 'dispatch') return 'Worker job dispatched'
-    if (event.action === 'candidate') return event.outcome === 'failed' ? 'Coder worker could not return a candidate' : 'Coder worker returned a candidate'
+    if (event.action === 'candidate') return event.outcome === 'failed' ? `${workerName(role)} could not return a candidate` : `${workerName(role)} returned a candidate`
     if (event.action === 'review') return event.outcome === 'accepted' ? 'Judge accepted the candidate' : 'Judge rejected the candidate'
     if (event.action === 'publish') return 'Candidate published for human review'
     if (event.outcome === 'retrying') return 'Task queued for another attempt'
@@ -58,13 +62,13 @@ function eventTitle(event: OperationalEvent) {
     return 'Task event recorded'
 }
 
-function eventDescription(event: OperationalEvent) {
+function eventDescription(event: OperationalEvent, role: Task['role']) {
     if (event.action === 'claim') return 'The supervisor claimed the task and started this attempt.'
     if (event.action === 'plan') return event.outcome === 'reused'
         ? 'The supervisor reused the bounded plan saved earlier. Plan text is withheld.'
         : 'A bounded plan was saved. Plan text is withheld.'
     if (event.action === 'dispatch') return 'The supervisor created a worker job for this attempt.'
-    if (event.action === 'candidate') return `Coder worker result received. Sandbox validation: ${event.validation_status || 'not recorded'}.`
+    if (event.action === 'candidate') return `${workerName(role)} result received. Sandbox validation: ${event.validation_status || 'not recorded'}.`
     if (event.action === 'review') return event.outcome === 'rejected'
         ? 'The judge rejected the candidate. A bounded rationale may be shown.'
         : 'The judge accepted the candidate. Review text is withheld.'
@@ -75,12 +79,12 @@ function eventDescription(event: OperationalEvent) {
     return 'The task outcome was recorded for this attempt.'
 }
 
-function eventActor(event: OperationalEvent) {
-    const actor = event.actor === 'worker' ? 'Coder (worker)' : event.actor === 'judge' ? 'Judge' : 'Supervisor'
+function eventActor(event: OperationalEvent, role: Task['role']) {
+    const actor = event.actor === 'worker' ? `${workerName(role).replace(' worker', '')} (worker)` : event.actor === 'judge' ? 'Judge' : 'Supervisor'
     return event.action === 'task' && event.actor !== 'supervisor' ? `Failure stage: ${actor}` : actor
 }
 
-function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefined }) {
+function ExecutionFlow({ events, role }: { events: OperationalEvent[] | null | undefined; role: Task['role'] }) {
     if (events === undefined || events === null) {
         return <p className="timeline-state" role="status">Operational event history is unavailable from this response.</p>
     }
@@ -92,20 +96,20 @@ function ExecutionFlow({ events }: { events: OperationalEvent[] | null | undefin
             const nextEvent = newestFirstEvents[index + 1]
             return <li key={`${event.timestamp}-${event.attempt}-${event.actor}-${event.action}-${index}`}>
                 <div className="timeline-event-heading">
-                    <strong>{eventTitle(event)}</strong>
-                    <span>Attempt {event.attempt} · {eventActor(event)}</span>
+                    <strong>{eventTitle(event, role)}</strong>
+                    <span>Attempt {event.attempt} · {eventActor(event, role)}</span>
                 </div>
                 <time dateTime={new Date(event.timestamp * 1000).toISOString()}>
                     {new Date(event.timestamp * 1000).toLocaleString()}
                 </time>
-                <p>{eventDescription(event)}</p>
+                <p>{eventDescription(event, role)}</p>
                 {event.score !== null && <p>Recorded score: {event.score.toFixed(2)} / 1</p>}
                 {event.review_topics.length > 0 && <p>Review topics: {event.review_topics.join(', ')}</p>}
                 <p className="timeline-reason"><strong>Why:</strong> {event.reason === 'judge-rejected' && event.failure_details?.stage === 'judge'
                     ? event.failure_details.summary
                     : event.reason ? eventReasons[event.reason] || 'A safe operational reason was recorded.' : 'No reason was recorded for this event.'}</p>
                 <p className="timeline-next"><strong>Next older event:</strong> {nextEvent
-                    ? `${eventTitle(nextEvent)} · Attempt ${nextEvent.attempt} · ${eventActor(nextEvent)}`
+                    ? `${eventTitle(nextEvent, role)} · Attempt ${nextEvent.attempt} · ${eventActor(nextEvent, role)}`
                     : 'No earlier event is available in retained history.'}</p>
             </li>
         })}
@@ -139,7 +143,7 @@ export default function Interactions({ task }: { task: Task }) {
                 <p>Latest recorded job, not proof that a worker is currently running.</p>
             </li>
             <li>
-                <h4>Coder (worker) → supervisor</h4>
+                <h4>{workerName(task.role)} → supervisor</h4>
                 <strong>{execution?.worker_status === 'candidate' ? 'Candidate returned' : execution?.worker_status === 'candidate_failed' ? 'Candidate failed' : 'No worker result retained'}</strong>
                 <p>Validation: {execution?.validation_status || 'not recorded'}. The worker executes coding and sandbox checks; individual coder calls are not recorded.</p>
                 {execution?.report_failed && <p className="error">Result reporting failed.</p>}
@@ -167,7 +171,7 @@ export default function Interactions({ task }: { task: Task }) {
         <div className="interaction-timeline-section">
             <h4>Execution flow</h4>
             <p className="timeline-caption">Newest retained events first. Only persisted facts are shown.</p>
-            <ExecutionFlow events={task.events} />
+            <ExecutionFlow events={task.events} role={task.role} />
         </div>
     </section>
 }

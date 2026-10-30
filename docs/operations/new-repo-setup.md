@@ -37,7 +37,7 @@ fixed validation command. They are not required for each repository:
 ```yaml
 supervisor:
   config:
-    judge-url: "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"
+    judge-url: "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1"
     judge-model: "your-configured-judge-model"
     coder-model: "your-configured-coder-model"
 worker:

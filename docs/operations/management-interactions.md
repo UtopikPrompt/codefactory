@@ -14,6 +14,10 @@ management authentication as task details.
   callback and its sandbox validation status. Individual model calls are not
   tracked. The terminal supervisor result replaces the worker result, so a
   completed task can correctly show no retained worker result.
+- **Task role:** the role selected from the authoritative GitHub issue labels
+  and persisted with the task snapshot. The `documentation` label routes to the
+  documentation worker; otherwise tasks use the coder. Candidate events name
+  the selected worker role.
 - **Judge → supervisor:** a persisted numeric review score in `[0, 1]`, when
   present in the terminal result. No acceptance threshold or pass/fail decision
   is inferred from this number.
@@ -42,6 +46,19 @@ shown as not recorded. API errors use the existing retry state rather than
 displaying a false empty interaction history.
 Manual retries can inherit feedback from their `retry_of` task; the saved
 feedback attempt number can therefore refer to the original task.
+
+## Documentation tasks
+
+The gateway fetches and validates GitHub issue metadata before assigning a role.
+Only the case-insensitive `documentation` issue label selects `doc`; a role in
+the intake payload cannot override that decision. Retries inherit the original
+persisted role. The documentation worker uses the coder model and endpoint,
+receives repository-read, candidate-edit and sandbox-validation tools, and is
+restricted to `docs/**/*.md` plus the approved root guides (`README.md`,
+`CONTRIBUTING.md`, `CHANGELOG.md`, `SECURITY.md`, and `CODE_OF_CONDUCT.md`).
+The supervisor independently checks candidate paths before review and
+publication. Documentation candidates still pass the pinned repository
+validation policy, judge review, and supervisor-only human-review PR flow.
 
 ## Model and prompt revisions
 

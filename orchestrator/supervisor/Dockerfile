@@ -28,7 +28,7 @@ WORKDIR /app
 ENV ACCEPTANCE_THRESHOLD="0.7"
 ENV ACCEPTOR_URL="http://codefactory.local:8000"
 ENV JUDGE_MODEL="qwen2.5-coder-7b-instruct-q4-km@32k"
-ENV JUDGE_URL="http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"
+ENV JUDGE_URL="http://inference-cpu.inference-dev.svc.cluster.local:8000/v1"
 ENV WORKER_COUNT="2"
 
 # System dependencies (CPU-only toolchain).
@@ -42,7 +42,7 @@ COPY --from=build /usr/local/lib/python3.12/site-packages /usr/local/lib/python3
 COPY --from=build /usr/local/bin /usr/local/bin
 
 # Supervisor loop source (modules).
-COPY supervisor.py task_runtime.py candidate_workflow.py task_graph.py supervisor_runtime.py /app/
+COPY supervisor.py task_runtime.py candidate_workflow.py task_graph.py durable_task_graph.py supervisor_runtime.py /app/
 
 # Persist loop state and task work directories.
 RUN mkdir -p /data/loop-state /data/task-work && \

@@ -11,6 +11,16 @@ import urllib.parse
 import urllib.request
 from pathlib import PurePosixPath
 
+DOCUMENTATION_ROOT_FILES = {"README.md", "CONTRIBUTING.md", "CHANGELOG.md", "SECURITY.md", "CODE_OF_CONDUCT.md"}
+
+
+def is_documentation_path(path):
+    if not isinstance(path, str):
+        return False
+    if path in DOCUMENTATION_ROOT_FILES:
+        return True
+    return path.startswith("docs/") and PurePosixPath(path).suffix.lower() == ".md"
+
 
 class AppGitHub:
     def __init__(self, task, runtime, github_request, opener):
@@ -76,9 +86,12 @@ def verified_candidate_patch(task, candidate, github_request):
         content = edit.get("content")
         if (not path or PurePosixPath(path).is_absolute() or "\\" in path
                 or any(part in ("", ".", "..") or part.startswith(".") for part in parts)
+            or (task.get("role", "coder") == "doc" and not is_documentation_path(path))
                 or any(part.lower() in {"dockerfile", "requirements.txt", "secrets.yaml", "secrets.yml"} for part in parts)
                 or not isinstance(content, str) or not content.strip()):
             raise RuntimeError("candidate-edit-policy-violation")
+        if any("/".join(parts[:depth]) in entries for depth in range(1, len(parts))):
+            raise RuntimeError("candidate-base-file-unsupported")
         total_size += len(content.encode())
         if total_size > 524288:
             raise RuntimeError("candidate-edits-too-large")
@@ -101,7 +114,7 @@ def verified_candidate_patch(task, candidate, github_request):
 
 async def prepare_judge_model(client, endpoint, model, key, runtime):
     enabled = (runtime or {}).get("judge_native_download", os.environ.get(
-        "JUDGE_NATIVE_DOWNLOAD", str(endpoint == "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1")).lower() == "true")
+        "JUDGE_NATIVE_DOWNLOAD", str(endpoint == "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1")).lower() == "true")
     if not enabled:
         return
     url = endpoint.rstrip("/").removesuffix("/v1") + "/models"
@@ -132,7 +145,7 @@ async def prepare_judge_model(client, endpoint, model, key, runtime):
 
 
 async def judge_candidate(task, candidate, runtime, httpx_module):
-    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"))
+    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1"))
     model = (runtime or {}).get("judge_model", os.environ.get("JUDGE_MODEL", "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"))
     threshold = float((runtime or {}).get("threshold", os.environ.get("ACCEPTANCE_THRESHOLD", "0.8")))
     review_margin = float((runtime or {}).get("judge_review_margin", os.environ.get("JUDGE_REVIEW_MARGIN", "0.1")))
@@ -182,7 +195,7 @@ async def _request_candidate_review(client, endpoint, model, key, prompt, instru
 
 
 async def plan_task(task, catalog, runtime, max_total_attempts, httpx_module):
-    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"))
+    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://inference-cpu.inference-dev.svc.cluster.local:8000/v1"))
     model = (runtime or {}).get("judge_model", os.environ.get("JUDGE_MODEL", "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"))
     key = os.environ.get("OPENAI_API_KEY", "")
     if not key:
@@ -230,6 +243,7 @@ def publish_candidate(task, candidate, runtime, github_request):
         parts = path.split("/")
         if (not path or PurePosixPath(path).is_absolute() or "\\" in path
                 or any(part in ("", ".", "..") or part.startswith(".") for part in parts)
+            or (task.get("role", "coder") == "doc" and not is_documentation_path(path))
                 or any(part.lower() in {".github", "dockerfile", "requirements.txt", "secrets.yaml"} for part in parts)
                 or not isinstance(edit.get("content"), str)):
             raise RuntimeError("candidate-edit-policy-violation")
@@ -260,9 +274,19 @@ def publish_candidate(task, candidate, runtime, github_request):
         if pull.get("state") != "open" or pull.get("base", {}).get("ref") != branch:
             raise RuntimeError("existing-pr-policy-conflict")
     else:
-        pull = github_request("POST", repo, "/pulls", {
-            "title": f"Implement issue #{task['issue']}", "head": work_branch, "base": branch,
-            "body": f"Closes issue #{task['issue']}\n\nValidated candidate selected by Code Factory. Human review required. Task: {task_id}"})
+        try:
+            pull = github_request("POST", repo, "/pulls", {
+                "title": f"Implement issue #{task['issue']}", "head": work_branch, "base": branch,
+                "body": f"Closes issue #{task['issue']}\n\nValidated candidate selected by Code Factory. Human review required. Task: {task_id}"})
+        except RuntimeError as error:
+            if str(error) != "github-api-http-422":
+                raise
+            raced_pulls = github_request("GET", repo, pull_path) or []
+            if not raced_pulls:
+                raise
+            pull = raced_pulls[0]
+            if pull.get("state") != "open" or pull.get("base", {}).get("ref") != branch:
+                raise RuntimeError("existing-pr-policy-conflict") from None
     number = pull.get("number")
     if not isinstance(number, int) or number <= 0:
         raise RuntimeError("pr-creation-unverified")

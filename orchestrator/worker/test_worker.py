@@ -338,6 +338,29 @@ def test_editor_rejects_symlink(tmp_path):
         editor._write("link/escape", "unsafe")
 
 
+@pytest.mark.parametrize("path", ["docs/guide.md", "README.md", "CONTRIBUTING.md"])
+def test_documentation_editor_allows_only_approved_markdown_paths(tmp_path, path):
+    editor = CodeEditor(str(tmp_path / "repo"), role="doc")
+    assert editor._write(path, "Documentation\n") == "Documentation\n"
+    assert (tmp_path / "repo" / path).read_text() == "Documentation\n"
+
+
+@pytest.mark.parametrize("path", ["src/README.md", "docs/guide.txt", "src/app.py", "../docs/guide.md", "docs/../README.md"])
+def test_documentation_editor_rejects_non_documentation_and_traversal_paths(tmp_path, path):
+    editor = CodeEditor(str(tmp_path / "repo"), role="doc")
+    with pytest.raises(ValueError, match="edit-path|policy"):
+        editor._write(path, "Not documentation\n")
+
+
+def test_documentation_editor_rejects_symlinked_documentation_path(tmp_path):
+    editor = CodeEditor(str(tmp_path / "repo"), role="doc")
+    docs = tmp_path / "repo" / "docs"
+    docs.mkdir(parents=True)
+    (docs / "link.md").symlink_to(tmp_path / "outside.md")
+    with pytest.raises(ValueError, match="unsafe-edit-path"):
+        editor._write("docs/link.md", "unsafe\n")
+
+
 def test_write_returns_none_on_oserror(tmp_path):
     # Writing into an existing directory raises OSError (IsADirectoryError).
     editor = CodeEditor(str(tmp_path / "repo"))

@@ -58,7 +58,17 @@ TASK_DB_PATH = os.environ.get("TASK_DB_PATH", "/data/tasks/tasks.sqlite3")
 
 
 def task_database(path: str | None = None):
-    return _task_database(path or TASK_DB_PATH)
+    return _task_database(path or os.environ.get("TASK_DB_PATH", TASK_DB_PATH))
+
+
+def checkpoint_database_path(db, attempt, schema_version):
+    configured = os.environ.get("TASK_CHECKPOINT_DB_DIR")
+    if configured and not os.path.isabs(configured):
+        raise RuntimeError("checkpoint-path-must-be-absolute")
+    database_path = db.execute("PRAGMA database_list").fetchone()["file"]
+    directory = configured or (os.path.dirname(database_path) if database_path else "/data/tasks")
+    os.makedirs(directory, exist_ok=True)
+    return os.path.join(directory, f"checkpoints-v{schema_version}-attempt-{attempt}.sqlite3")
 
 
 def claim_queued_task(db, owner: str, now: float | None = None, lease_seconds: int = 900,

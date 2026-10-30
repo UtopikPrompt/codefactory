@@ -65,10 +65,44 @@ def initialize(db, environ):
                     runtime, time.time(), "helm"))
         db.execute("INSERT OR IGNORE INTO agent_config_state(singleton,active_config_hash) VALUES(1,?)",
                    (environ["AGENT_CONFIG_HASH"],))
+        _add_catalog_roles(db, catalog_doc, schema)
         db.commit()
     except Exception:
         db.rollback()
         raise
+
+
+def _add_catalog_roles(db, bootstrap_catalog, catalog_schema):
+    current = _active(db)
+    if current is None:
+        return
+    active_catalog = yaml.safe_load(current["catalog"])
+    active_roles = active_catalog.get("roles") if isinstance(active_catalog, dict) else None
+    bootstrap_roles = bootstrap_catalog.get("roles") if isinstance(bootstrap_catalog, dict) else None
+    if not isinstance(active_roles, dict) or not isinstance(bootstrap_roles, dict):
+        return
+    if set(active_roles) != {"coder", "judge"} or set(bootstrap_roles) != {"coder", "doc", "judge"}:
+        return
+
+    active_catalog["roles"] = {**active_roles, "doc": bootstrap_roles["doc"]}
+    root = db.execute("SELECT config_version FROM agent_config_versions WHERE revision=1").fetchone()
+    latest = db.execute("SELECT MAX(revision) FROM agent_config_versions").fetchone()[0]
+    if root is None or latest is None:
+        raise ConfigUnavailable("agent-config-root-unavailable")
+    revision = latest + 1
+    version = f"{root['config_version']}-r{revision}"
+    active_catalog["config_version"] = version
+    catalog = yaml.safe_dump(active_catalog, sort_keys=False, allow_unicode=False)
+    runtime = json.loads(current["runtime_config"])
+    runtime["version"], runtime["catalog"] = version, catalog
+    runtime_json = json.dumps(runtime, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256((catalog + catalog_schema + runtime_json).encode()).hexdigest()
+    db.execute("""INSERT INTO agent_config_versions
+        (config_hash,config_version,revision,catalog,catalog_schema,runtime_config,created_at,created_by)
+        VALUES(?,?,?,?,?,?,?,?)""",
+               (digest, version, revision, catalog, catalog_schema, runtime_json,
+                time.time(), "helm-catalog-upgrade"))
+    db.execute("UPDATE agent_config_state SET active_config_hash=? WHERE singleton=1", (digest,))
 
 
 def public_config(row):
@@ -83,7 +117,7 @@ def public_config(row):
         "prompts": runtime["prompts"],
         "agents": [{"id": role["id"], "role": name, "endpoint_alias": role["endpoint_alias"],
                     "max_files": role["max_files"], "tools": role["tools"], "availability": "unknown"}
-                   for name, role in catalog["roles"].items() if name in ("coder", "judge")],
+                   for name, role in catalog["roles"].items() if name in ("coder", "doc", "judge")],
     }
 
 

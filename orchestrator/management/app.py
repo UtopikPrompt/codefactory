@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic
 
 TASK_FIELDS = ("task_id", "repo", "issue_number", "status", "lifecycle", "credential_cleanup",
-               "retry_of", "retry_task_id", "attempts", "config_version", "config_hash")
+               "role", "retry_of", "retry_task_id", "attempts", "config_version", "config_hash")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 TASK_ID = re.compile(r"[A-Za-z0-9_.-]{1,63}")
 JOB_NAME = re.compile(r"[a-z0-9](?:[-a-z0-9.]{0,61}[a-z0-9])?")
@@ -233,7 +233,10 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
             raise HTTPException(502, "gateway-unavailable") from None
 
     def task_summary(task):
-        return {field: task[field] for field in TASK_FIELDS if field in task}
+        summary = {field: task[field] for field in TASK_FIELDS if field in task}
+        if "role" in summary and summary["role"] not in ("coder", "doc"):
+            summary["role"] = None
+        return summary
 
     def task_execution(data):
         result = data.get("result")

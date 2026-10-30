@@ -5,12 +5,17 @@ import json
 import time
 import uuid
 
+from durable_task_graph import (
+    WORKFLOW_SCHEMA_VERSION,
+    DurableTaskFailure,
+    DurableTaskWorkflow,
+    build_durable_task_graph,
+)
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from task_runtime import (
     failure_feedback,
     record_task_event,
     requeue_failed_task,
-    review_topics,
-    safe_judge_review,
 )
 
 
@@ -37,6 +42,47 @@ class SupervisorLoop:
         supervisor.logger.info(
             f"[{state['task_id']}] Metrics: status={status} duration={duration:.2f}s "
             f"best_score={state['best_output']['score'] if state.get('best_output') else 'n/a'}")
+
+    async def _handle_task_failure(self, db, task, owner, stage, error):
+        supervisor = self.supervisor
+        task_id = task["task_id"]
+        current = db.execute("SELECT status,claim_owner,attempts FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if (current is None or current["status"] != "running" or current["claim_owner"] != owner
+                or current["attempts"] != task["attempts"]):
+            return
+        reason = str(error).split(":", 1)[0]
+        feedback = failure_feedback(stage, reason, task["attempts"])
+        safe_feedback = json.loads(feedback)
+        terminal_errors = {
+            "pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",
+            "pr-publication-credential-required", "task-authentication-unsupported", "judge-credential-required",
+            "planner-credential-required", "planner-output-invalid", "candidate-publish-data-missing",
+            "candidate-edit-policy-violation", "task-config-pin-invalid", "task-catalog-hash-mismatch",
+            "task-catalog-schema-invalid", "task-catalog-version-unsupported", "task-catalog-role-set-invalid",
+            "task-catalog-role-invalid", "task-catalog-capability-boundary-invalid",
+        }
+        terminal = task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS or reason in terminal_errors
+        actor = stage if stage in ("worker", "judge") else "supervisor"
+        record_task_event(db, task_id, task["attempts"], actor, "task",
+                          "failed" if terminal else "retrying", reason=safe_feedback["reason"],
+                          claim_owner=owner, claim_attempt=task["attempts"])
+        if terminal:
+            db.execute("UPDATE tasks SET retry_feedback=? WHERE task_id=? AND claim_owner=? AND attempts=?",
+                       (feedback, task_id, owner, task["attempts"]))
+            try:
+                supervisor._complete_via_gateway(task_id, "failed", None, claim_owner=owner,
+                                                 attempt=task["attempts"], error=str(error)[:1000])
+            except Exception:
+                supervisor.logger.exception("could not persist terminal failure task=%s", task_id)
+        else:
+            accepted = db.execute("""SELECT 1 FROM task_events WHERE task_id=? AND attempt=?
+                AND actor='judge' AND action='review' AND outcome='accepted' LIMIT 1""",
+                (task_id, task["attempts"])).fetchone()
+            if stage == "publish" or (current["status"] == "running" and accepted):
+                db.execute("UPDATE tasks SET claim_owner=NULL,claimed_at=? WHERE task_id=? AND claim_owner=?",
+                           (time.time(), task_id, owner))
+            else:
+                requeue_failed_task(db, task_id, owner, feedback)
 
     @staticmethod
     def _state_to_value(status):
@@ -71,128 +117,39 @@ class SupervisorLoop:
         task_id = task["task_id"]
         started_at = time.monotonic()
         supervisor.ACTIVE_TASKS.inc()
-        record_task_event(db, task_id, task["attempts"] or 1, "supervisor", "claim", "started")
-        runtime = None
-        failure_stage = "supervisor"
         try:
-            if json.loads(task["payload"]).get("repository_auth") != "github-app":
-                raise RuntimeError("task-authentication-unsupported")
-            catalog, runtime = supervisor._load_pinned_catalog(task, db)
-            if task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS and not task["result"]:
-                record_task_event(db, task_id, task["attempts"], "supervisor", "task", "failed",
-                                  reason="max-total-attempts-exhausted")
-                supervisor._complete_via_gateway(task_id, "failed", runtime, error="max-total-attempts-exhausted")
-                return True
-            if not task["plan"]:
-                plan = await supervisor._plan_task(task, catalog, runtime)
-                db.execute("UPDATE tasks SET plan=? WHERE task_id=? AND claim_owner=?", (plan, task_id, owner))
-                record_task_event(db, task_id, task["attempts"], "supervisor", "plan", "recorded")
-                task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-            else:
-                record_task_event(db, task_id, task["attempts"], "supervisor", "plan", "reused")
-            if task["result"]:
-                candidate = json.loads(task["result"])
-            else:
-                endpoints = runtime["worker_inference_endpoints"]
-                endpoint_index = supervisor._allocate_worker_endpoint(db, task_id, owner, len(endpoints))
-                endpoint = endpoints[endpoint_index]
-                worker_runtime = dict(runtime)
-                worker_runtime["coder_url"] = endpoint["url"]
-                job_name = supervisor._dispatch_task(task, worker_runtime)
-                db.execute("UPDATE tasks SET job=? WHERE task_id=? AND claim_owner=?",
-                           (json.dumps({"name": job_name}), task_id, owner))
-                record_task_event(db, task_id, task["attempts"], "supervisor", "dispatch", "dispatched")
-                deadline = time.monotonic() + int(supervisor.os.environ.get("TASK_RESULT_TIMEOUT_SECONDS", "1800"))
-                candidate = None
-                while time.monotonic() < deadline:
-                    current = db.execute("SELECT result, claim_owner FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-                    if current is None or current["claim_owner"] != owner:
-                        raise RuntimeError("task-claim-lost")
-                    if current["result"]:
-                        candidate = json.loads(current["result"])
-                        break
-                    db.execute("UPDATE tasks SET claimed_at=? WHERE task_id=? AND claim_owner=?",
-                               (time.time(), task_id, owner))
-                    await asyncio.sleep(float(supervisor.os.environ.get("TASK_POLL_SECONDS", "5")))
-                if candidate is None:
-                    raise RuntimeError("worker-result-timeout")
-            if candidate.get("status") != "candidate":
-                failure_stage = "worker"
-                raise RuntimeError(candidate.get("error", "worker-candidate-failed"))
-            candidate_attempt = candidate.pop("attempt", task["attempts"])
-            if type(candidate_attempt) is not int or candidate_attempt != task["attempts"]:
-                failure_stage = "worker"
-                raise RuntimeError("task-attempt-mismatch")
-            candidate = supervisor._verified_candidate_patch(task, candidate)
-            score, review = await supervisor._judge_candidate(task, candidate, runtime)
-            threshold = float(runtime["threshold"])
-            if not 0 <= threshold <= 1:
-                raise RuntimeError("acceptance-threshold-invalid")
-            accepted = score >= threshold
-            summary = safe_judge_review(review, (
-                task["payload"], candidate.get("patch", ""),
-                *(edit.get("content", "") for edit in candidate.get("edits", []) if isinstance(edit, dict)),
-            )) if not accepted else None
-            record_task_event(db, task_id, task["attempts"], "judge", "review",
-                              "accepted" if accepted else "rejected", reason=None if accepted else "judge-rejected",
-                              score=score, review_topics=review_topics(review),
-                              failure_details={"stage": "judge", "code": "review-rejected", "summary": summary}
-                              if summary else None)
-            if score < threshold:
-                feedback = failure_feedback("judge", "judge-rejected", task["attempts"], review)
-                if task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS:
-                    record_task_event(db, task_id, task["attempts"], "supervisor", "task", "failed",
-                                      reason="judge-rejected", review_topics=review_topics(review))
-                    db.execute("UPDATE tasks SET retry_feedback=? WHERE task_id=? AND claim_owner=?",
-                               (feedback, task_id, owner))
-                    supervisor._complete_via_gateway(task_id, "failed", runtime,
-                                                     error="judge-rejected-after-eight-attempts", score=score, review=review)
-                else:
-                    record_task_event(db, task_id, task["attempts"], "supervisor", "task", "retrying",
-                                      reason="judge-rejected", review_topics=review_topics(review))
-                    requeue_failed_task(db, task_id, owner, feedback)
-                return True
-            if json.loads(task["payload"]).get("repository_auth") != "github-app":
-                raise RuntimeError("task-authentication-unsupported")
-            current = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-            pr_url = supervisor._publish_candidate(current, candidate, runtime)
-            record_task_event(db, task_id, task["attempts"], "supervisor", "publish", "completed")
-            supervisor._complete_via_gateway(task_id, "completed", runtime, pr_url=pr_url, score=score, review=review,
-                                             config_version=task["config_version"], config_hash=task["config_hash"])
-            record_task_event(db, task_id, task["attempts"], "supervisor", "task", "completed")
-        except Exception as error:
+            record_task_event(db, task_id, task["attempts"] or 1, "supervisor", "claim", "started",
+                              claim_owner=owner, claim_attempt=task["attempts"])
+            config = {"configurable": {
+                "thread_id": task_id,
+                "claim_owner": owner,
+            }}
+            checkpoint_path = supervisor.checkpoint_database_path(
+                db, task["attempts"], WORKFLOW_SCHEMA_VERSION)
+            async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+                graph = build_durable_task_graph(DurableTaskWorkflow(supervisor, db), checkpointer)
+                await graph.ainvoke({"task_id": task_id, "attempt": task["attempts"],
+                                    "schema_version": WORKFLOW_SCHEMA_VERSION}, config)
+        except DurableTaskFailure as stage_error:
+            await self._handle_task_failure(db, task, owner, stage_error.stage, stage_error.error)
+        except Exception:
             supervisor.logger.exception("durable task failed task=%s", task_id)
-            terminal_errors = {"pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",
-                               "pr-publication-credential-required", "task-authentication-unsupported", "judge-credential-required",
-                               "planner-credential-required", "planner-output-invalid",
-                               "candidate-publish-data-missing", "candidate-edit-policy-violation",
-                               "task-config-pin-invalid", "task-catalog-hash-mismatch",
-                               "task-catalog-schema-invalid", "task-catalog-version-unsupported", "task-catalog-role-set-invalid",
-                               "task-catalog-role-invalid", "task-catalog-capability-boundary-invalid"}
-            reason = str(error).split(":", 1)[0]
-            feedback = failure_feedback(failure_stage, reason, task["attempts"])
-            safe_feedback = json.loads(feedback)
-            terminal = task["attempts"] >= supervisor.MAX_TOTAL_ATTEMPTS or reason in terminal_errors
-            record_task_event(db, task_id, task["attempts"], failure_stage, "task",
-                              "failed" if terminal else "retrying", reason=safe_feedback["reason"],
-                              review_topics=safe_feedback.get("review_topics", []))
-            if terminal:
-                db.execute("UPDATE tasks SET retry_feedback=? WHERE task_id=? AND claim_owner=?",
-                           (feedback, task_id, owner))
-                try:
-                    supervisor._complete_via_gateway(task_id, "failed", runtime, error=str(error)[:1000])
-                except Exception:
-                    supervisor.logger.exception("could not persist terminal failure task=%s", task_id)
-            else:
-                requeue_failed_task(db, task_id, owner, feedback)
+            current = db.execute("SELECT status,claim_owner FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if current and current["status"] == "running" and current["claim_owner"] == owner:
+                record_task_event(db, task_id, task["attempts"], "supervisor", "task", "retrying",
+                                  reason="checkpoint-store-unavailable", claim_owner=owner,
+                                  claim_attempt=task["attempts"])
+                db.execute("UPDATE tasks SET claim_owner=NULL,claimed_at=? WHERE task_id=? AND claim_owner=?",
+                           (time.time(), task_id, owner))
         finally:
             try:
                 duration = max(0.0, time.monotonic() - started_at)
-                supervisor.AGENT_TASK_ATTEMPT_DURATION.labels(role="coder").observe(duration)
+                task_role = task["role"] if task["role"] in ("coder", "doc") else "coder"
+                supervisor.AGENT_TASK_ATTEMPT_DURATION.labels(role=task_role).observe(duration)
                 current = db.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
                 if current and current["status"] in ("completed", "failed"):
                     outcome = "success" if current["status"] == "completed" else "failure"
-                    supervisor.AGENT_TASKS.labels(role="coder", outcome=outcome).inc()
+                    supervisor.AGENT_TASKS.labels(role=task_role, outcome=outcome).inc()
             finally:
                 supervisor.ACTIVE_TASKS.dec()
                 db.close()

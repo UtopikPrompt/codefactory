@@ -30,12 +30,14 @@ def task_database(path: str | None = None):
         retry_of TEXT, retry_key TEXT, credential_cleanup TEXT NOT NULL DEFAULT 'retained',
         attempts INTEGER NOT NULL DEFAULT 0, claim_owner TEXT, claimed_at REAL,
             config_version TEXT, config_hash TEXT, plan TEXT, retry_feedback TEXT,
+            role TEXT NOT NULL DEFAULT 'coder', pr_url TEXT, judge_review TEXT,
             worker_endpoint_index INTEGER)""")
     columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
     for name, declaration in (("attempts", "INTEGER NOT NULL DEFAULT 0"), ("claim_owner", "TEXT"),
                               ("claimed_at", "REAL"), ("config_version", "TEXT"),
                               ("config_hash", "TEXT"), ("plan", "TEXT"), ("retry_feedback", "TEXT"),
-                              ("worker_endpoint_index", "INTEGER")):
+                              ("worker_endpoint_index", "INTEGER"), ("role", "TEXT NOT NULL DEFAULT 'coder'"),
+                              ("pr_url", "TEXT"), ("judge_review", "TEXT")):
         if name not in columns:
             db.execute(f"ALTER TABLE tasks ADD COLUMN {name} {declaration}")
     db.execute("""CREATE TABLE IF NOT EXISTS worker_endpoint_state (
@@ -72,13 +74,14 @@ EVENT_REASONS = {
     "pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",
     "pr-publication-credential-required", "candidate-publish-data-missing", "base-branch-changed",
     "existing-task-branch-conflict", "existing-pr-policy-conflict", "pr-creation-unverified", "pr-identity-invalid",
-    "judge-rejected",
+    "judge-rejected", "checkpoint-store-unavailable",
 }
 EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
 
 
 def record_task_event(db, task_id, attempt, actor, action, outcome, *, reason=None, validation_status=None,
-                      score=None, review_topics=(), failure_details=None):
+                      score=None, review_topics=(), failure_details=None, claim_owner=None,
+                      claim_attempt=None, task_updates=None):
     if actor not in ("supervisor", "worker", "judge") or action not in (
             "claim", "plan", "dispatch", "candidate", "review", "publish", "task") or outcome not in (
             "started", "recorded", "reused", "dispatched", "returned", "failed", "accepted", "rejected", "retrying", "completed"):
@@ -88,8 +91,26 @@ def record_task_event(db, task_id, attempt, actor, action, outcome, *, reason=No
     safe_score = score if type(score) in (int, float) and 0 <= score <= 1 else None
     topics = [topic for topic in EVENT_TOPICS if topic in review_topics]
     details = safe_failure_details(failure_details, actor, action, outcome, safe_reason)
+    task_updates = task_updates or {}
+    if set(task_updates) - {"pr_url", "judge_review"}:
+        raise ValueError("invalid-task-event-update")
     db.execute("BEGIN IMMEDIATE")
     try:
+        if claim_owner is not None:
+            task = db.execute("SELECT status,claim_owner,attempts FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if (task is None or task["status"] != "running" or task["claim_owner"] != claim_owner
+                    or (claim_attempt is not None and task["attempts"] != claim_attempt)):
+                raise RuntimeError("task-claim-lost")
+            for name, value in task_updates.items():
+                if name == "pr_url":
+                    updated = db.execute("""UPDATE tasks SET pr_url=? WHERE task_id=? AND status='running'
+                        AND claim_owner=? AND attempts=? AND (pr_url IS NULL OR pr_url=?)""",
+                                         (value, task_id, claim_owner, task["attempts"], value))
+                else:
+                    updated = db.execute("""UPDATE tasks SET judge_review=? WHERE task_id=? AND status='running'
+                        AND claim_owner=? AND attempts=?""", (value, task_id, claim_owner, task["attempts"]))
+                if updated.rowcount != 1:
+                    raise RuntimeError("task-claim-lost")
         db.execute("""INSERT INTO task_events(task_id,created_at,attempt,actor,action,outcome,reason,
             validation_status,score,review_topics,failure_details) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (task_id, time.time(), max(1, min(8, int(attempt))), actor, action, outcome, safe_reason,
@@ -268,15 +289,18 @@ def load_pinned_catalog(task, k8s_request, db=None):
     if not isinstance(catalog, dict) or catalog.get("spec_version") != 1 or catalog.get("config_version") != task["config_version"]:
         raise RuntimeError("task-catalog-version-unsupported")
     roles = catalog.get("roles")
-    if not isinstance(roles, dict) or set(roles) != {"coder", "judge"}:
+    if not isinstance(roles, dict) or set(roles) != {"coder", "doc", "judge"}:
         raise RuntimeError("task-catalog-role-set-invalid")
     allowed_tools = {"repository_read", "candidate_edit", "sandbox_validation", "candidate_review"}
     for role_id, role in roles.items():
         if (not isinstance(role, dict) or role.get("id") != role_id
-                or role.get("endpoint_alias") != role_id
+                or role.get("endpoint_alias") != ("judge" if role_id == "judge" else "coder")
                 or not set(role.get("tools", [])) <= allowed_tools):
             raise RuntimeError("task-catalog-role-invalid")
-    if "candidate_review" in roles["coder"].get("tools", []) or "candidate_edit" in roles["judge"].get("tools", []):
+    worker_tools = {"repository_read", "candidate_edit", "sandbox_validation"}
+    if (set(roles["coder"].get("tools", [])) != worker_tools
+            or set(roles["doc"].get("tools", [])) != worker_tools
+            or set(roles["judge"].get("tools", [])) != {"candidate_review"}):
         raise RuntimeError("task-catalog-capability-boundary-invalid")
     runtime = json.loads(runtime_content)
     required = {"acceptor_url", "coder_url", "coder_model", "coder_native_download", "judge_url", "judge_model",
@@ -296,6 +320,7 @@ def load_pinned_catalog(task, k8s_request, db=None):
     endpoint_urls = []
     for endpoint in worker_endpoints:
         if (not isinstance(endpoint, dict) or set(endpoint) != {"url", "model"}
+                or not isinstance(endpoint.get("url"), str)
                 or endpoint.get("model") != runtime["coder_model"]):
             raise RuntimeError("task-runtime-config-invalid")
         endpoint_url = endpoint["url"]
@@ -305,7 +330,7 @@ def load_pinned_catalog(task, k8s_request, db=None):
                 or endpoint_url == runtime["judge_url"] or endpoint_url in endpoint_urls):
             raise RuntimeError("task-runtime-config-invalid")
         endpoint_urls.append(endpoint_url)
-    if runtime["coder_url"] not in endpoint_urls or runtime["worker_parallelism"] > len(endpoint_urls):
+    if runtime["coder_url"] not in endpoint_urls:
         raise RuntimeError("task-runtime-config-invalid")
     review_margin = runtime.get("judge_review_margin", 0.1)
     if type(review_margin) not in (float, int) or not 0 <= review_margin <= 1:
@@ -369,14 +394,26 @@ def dispatch_task(task, runtime, k8s_request):
         "AGENT_CONFIG_VERSION", "AGENT_CONFIG_HASH", "JUDGE_URL", "JUDGE_MODEL",
         "JUDGE_NATIVE_DOWNLOAD", "JUDGE_ACCEPT_THRESHOLD", "OPENAI_API_KEY", "CODER_URL",
         "CODER_MODEL", "CODER_NATIVE_DOWNLOAD", "ACCEPTOR_URL", "ALLOWED_REPOS", "ALLOWED_REPO",
-        "TASK_REPO_POLICIES", "WORKER_ROLE", "WORKER_PROMPT_GUIDANCE"}]
+        "TASK_REPO_POLICIES", "WORKER_ROLE", "WORKER_PROMPT_GUIDANCE", "WORKER_ROLE_INSTRUCTIONS"}]
+    try:
+        task_role = task["role"]
+    except (KeyError, IndexError):
+        task_role = "coder"
+    if task_role not in ("coder", "doc"):
+        raise RuntimeError("task-catalog-role-invalid")
+    assigned_payload.pop("role", None)
+    assigned_payload.pop("task_role", None)
+    assigned_payload["task_role"] = task_role
+    catalog = yaml.safe_load(runtime["catalog"])
+    role_instructions = catalog["roles"][task_role]["instructions"]
     env.extend([
         {"name": "ASSIGNED_TASK_ID", "value": task["task_id"]},
         {"name": "TASK_ATTEMPT", "value": str(task["attempts"])},
         {"name": "ASSIGNED_TASK_PAYLOAD", "value": json.dumps(assigned_payload, sort_keys=True)},
         {"name": "AGENT_CONFIG_VERSION", "value": task["config_version"] or "1"},
         {"name": "AGENT_CONFIG_HASH", "value": task["config_hash"]},
-        {"name": "WORKER_ROLE", "value": "coder"},
+        {"name": "WORKER_ROLE", "value": task_role},
+        {"name": "WORKER_ROLE_INSTRUCTIONS", "value": role_instructions},
         {"name": "TASK_REPOSITORY", "value": task["repo"] or ""},
         {"name": "TASK_CREDENTIAL_EXPIRES_AT", "valueFrom": {"secretKeyRef": {
             "name": task["credential_ref"], "key": "expires-at"}}},

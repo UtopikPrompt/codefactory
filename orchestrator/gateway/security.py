@@ -44,6 +44,12 @@ def validate_repository(repo, issue, token, github):
             remote = github("GET", f"/repos/{quote(repo, safe='/')}/issues/{issue}", token=token)
             if remote.get("number") != issue or "pull_request" in remote or remote.get("html_url", "").lower() != f"https://github.com/{repo}/issues/{issue}".lower():
                 raise CredentialError("repository-issue-mismatch")
+            labels = remote.get("labels")
+            if not isinstance(labels, list) or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                                                   for label in labels):
+                raise CredentialError("repository-validation-unavailable")
+            return "doc" if any(label["name"].casefold() == "documentation" for label in labels) else "coder"
+        return "coder"
     except urllib.error.HTTPError as error:
         if error.code in (401, 403, 404):
             raise CredentialError("repository-credential-denied") from None
