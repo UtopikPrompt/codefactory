@@ -1356,7 +1356,7 @@ def test_helm_task_job_ttl_reaches_submitted_job(monkeypatch, ttl, helm_values):
     worker = worker_job_spec(documents)
     assert worker["suspend"] is True
     assert worker["backoffLimit"] == 0
-    assert "ttlSecondsAfterFinished" not in worker
+    assert worker["ttlSecondsAfterFinished"] == 900
     supervisor = next(document for document in documents if document["kind"] == "Deployment"
                       and document["metadata"]["name"] == "orchestrator-supervisor")
     env = {entry["name"]: entry.get("value")
