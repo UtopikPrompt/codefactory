@@ -709,6 +709,7 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
     job_spec = json.loads(worker_template["data"]["job-spec.json"])
     assert job_spec["suspend"] is True
     assert job_spec["activeDeadlineSeconds"] == 900
+    assert job_spec["ttlSecondsAfterFinished"] == 900
     assert job_spec["template"]["spec"]["containers"][0]["image"] == "ghcr.io/utopikprompt/codefactory-worker:latest"
     worker_env = {entry["name"]: entry.get("value")
                   for entry in job_spec["template"]["spec"]["containers"][0]["env"]}
