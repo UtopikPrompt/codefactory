@@ -35,12 +35,12 @@ supervisor:
     acceptor-url: "https://codefactory.local"
     allowed-base-branches: ""
     reviewers: ""
-    judge-url: "http://judge.inference.svc.cluster.local:8000/v1"
-    coder-url: "http://coder.inference.svc.cluster.local:8000/v1"
+    judge-url: "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"
+    coder-url: "http://inference-coder.inference-dev.svc.cluster.local:8000/v1"
     judge-model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
     coder-model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
     worker-inference-endpoints:
-    - url: "http://coder.inference.svc.cluster.local:8000/v1"
+    - url: "http://inference-coder.inference-dev.svc.cluster.local:8000/v1"
       model: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
     acceptance-threshold: 0.8
     # Borderline accepted candidates get a second critical review; set 0 to disable.
@@ -69,7 +69,6 @@ worker:
   - coder
   - refactor
   - test
-  coderUrl: ""
   # Null enables native preparation only for the corresponding default router URL.
   coderNativeDownload: null
   judgeNativeDownload: null

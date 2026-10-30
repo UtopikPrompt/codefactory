@@ -1,10 +1,10 @@
 {{- define "orchestrator.agentRuntimeConfigJson" -}}
-{{- $coderUrl := default (index .Values.supervisor.config "coder-url") .Values.worker.coderUrl -}}
-{{- $coderNative := eq $coderUrl "http://coder.inference.svc.cluster.local:8000/v1" -}}
+{{- $coderUrl := index .Values.supervisor.config "coder-url" -}}
+{{- $coderNative := eq $coderUrl "http://inference-coder.inference-dev.svc.cluster.local:8000/v1" -}}
 {{- if kindIs "bool" .Values.worker.coderNativeDownload -}}
 {{- $coderNative = .Values.worker.coderNativeDownload -}}
 {{- end -}}
-{{- $judgeNative := eq (index .Values.supervisor.config "judge-url") "http://judge.inference.svc.cluster.local:8000/v1" -}}
+{{- $judgeNative := eq (index .Values.supervisor.config "judge-url") "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1" -}}
 {{- if kindIs "bool" .Values.worker.judgeNativeDownload -}}
 {{- $judgeNative = .Values.worker.judgeNativeDownload -}}
 {{- end -}}

@@ -101,7 +101,7 @@ def verified_candidate_patch(task, candidate, github_request):
 
 async def prepare_judge_model(client, endpoint, model, key, runtime):
     enabled = (runtime or {}).get("judge_native_download", os.environ.get(
-        "JUDGE_NATIVE_DOWNLOAD", str(endpoint == "http://judge.inference.svc.cluster.local:8000/v1")).lower() == "true")
+        "JUDGE_NATIVE_DOWNLOAD", str(endpoint == "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1")).lower() == "true")
     if not enabled:
         return
     url = endpoint.rstrip("/").removesuffix("/v1") + "/models"
@@ -132,7 +132,7 @@ async def prepare_judge_model(client, endpoint, model, key, runtime):
 
 
 async def judge_candidate(task, candidate, runtime, httpx_module):
-    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://judge.inference.svc.cluster.local:8000/v1"))
+    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"))
     model = (runtime or {}).get("judge_model", os.environ.get("JUDGE_MODEL", "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"))
     threshold = float((runtime or {}).get("threshold", os.environ.get("ACCEPTANCE_THRESHOLD", "0.8")))
     review_margin = float((runtime or {}).get("judge_review_margin", os.environ.get("JUDGE_REVIEW_MARGIN", "0.1")))
@@ -182,7 +182,7 @@ async def _request_candidate_review(client, endpoint, model, key, prompt, instru
 
 
 async def plan_task(task, catalog, runtime, max_total_attempts, httpx_module):
-    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://judge.inference.svc.cluster.local:8000/v1"))
+    endpoint = (runtime or {}).get("judge_url", os.environ.get("JUDGE_URL", "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"))
     model = (runtime or {}).get("judge_model", os.environ.get("JUDGE_MODEL", "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"))
     key = os.environ.get("OPENAI_API_KEY", "")
     if not key:

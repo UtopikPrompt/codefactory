@@ -278,10 +278,10 @@ def test_namespace_is_not_a_chart_value():
 
 
 def test_judge_url_and_review_margin_render():
-    default_url = "http://judge.inference.svc.cluster.local:8000/v1"
+    default_url = "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"
     cases = [(None, default_url, True, 0.1, 0.1),
-             ("http://inference-judge.inference-dev.svc.cluster.local:8000/v1",
-              "http://inference-judge.inference-dev.svc.cluster.local:8000/v1", False, 0.25, 0.25)]
+             ("http://judge.example.test/v1",
+              "http://judge.example.test/v1", False, 0.25, 0.25)]
     for override, expected_url, expected_native, margin, expected_margin in cases:
         command = ["helm", "template", "orchestrator", str(CHART), "--namespace", "orchestrator"]
         if override:
@@ -300,7 +300,7 @@ def test_judge_url_and_review_margin_render():
         assert runtime["judge_review_margin"] == expected_margin
         assert runtime["worker_parallelism"] == 1
         assert runtime["worker_inference_endpoints"] == [{
-            "url": "http://coder.inference.svc.cluster.local:8000/v1",
+            "url": "http://inference-coder.inference-dev.svc.cluster.local:8000/v1",
             "model": runtime["coder_model"],
         }]
 
@@ -310,7 +310,7 @@ def test_worker_endpoint_contract_rejects_mismatched_values():
     config = base["supervisor"]["config"]
     cases = [
         ({"worker-inference-endpoints": [{
-            "url": "http://coder.inference.svc.cluster.local:8000/v1", "model": "other-model",
+            "url": "http://inference-coder.inference-dev.svc.cluster.local:8000/v1", "model": "other-model",
         }]}, "model aliases must match"),
         ({"worker-parallelism": 2}, "cannot exceed worker-inference-endpoints count"),
         ({"coder-url": "http://unlisted.inference.svc.cluster.local:8000/v1"},
@@ -675,7 +675,7 @@ def test_pod_owning_orchestrator_resources_use_release_prefix_and_valid_selector
             "--set", "management.enabled=true",
             "--set", "supervisor.config.coder-model=chart-coder-model",
             "--set-json",
-            'supervisor.config.worker-inference-endpoints=[{"url":"http://coder.inference.svc.cluster.local:8000/v1","model":"chart-coder-model"}]',
+            'supervisor.config.worker-inference-endpoints=[{"url":"http://inference-coder.inference-dev.svc.cluster.local:8000/v1","model":"chart-coder-model"}]',
         ],
         check=True, capture_output=True, text=True,
     )

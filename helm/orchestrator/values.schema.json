@@ -631,9 +631,6 @@
                     "not": {},
                     "description": "Set secretRefs.coderApiKey when the endpoint requires authentication."
                 },
-                "coderUrl": {
-                    "type": "string"
-                },
                 "judgeAcceptThreshold": {
                     "type": "number",
                     "minimum": 0.8,

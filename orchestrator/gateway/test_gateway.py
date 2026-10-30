@@ -1274,8 +1274,8 @@ def test_helm_pins_nonsecret_catalog_runtime_and_p40_routes(helm_values):
     assert not any(secret_name in data["runtime-config.json"] for secret_name in
                    ("openai-api-key", "pr-github-token", "coder-api-key", "supervisor-auth-token"))
     runtime = json.loads(data["runtime-config.json"])
-    assert runtime["coder_url"] == "http://coder.inference.svc.cluster.local:8000/v1"
-    assert runtime["judge_url"] == "http://judge.inference.svc.cluster.local:8000/v1"
+    assert runtime["coder_url"] == "http://inference-coder.inference-dev.svc.cluster.local:8000/v1"
+    assert runtime["judge_url"] == "http://inference-judge-cpu.inference-dev.svc.cluster.local:8000/v1"
     assert runtime["coder_native_download"] is True
     assert runtime["judge_native_download"] is True
     worker = worker_job_spec(documents)
