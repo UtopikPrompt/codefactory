@@ -140,6 +140,8 @@ def test_ci_workflow_matrix_partition_and_dependencies(tmp_path, service):
     expected_requirements = ["pytest", "PyYAML>=6,<7"] if service == "shared" else ["-r requirements.txt"]
     if service == "management":
         expected_requirements.append("-r ../gateway/requirements.txt")
+    if service == "gateway":
+        expected_requirements.append("-r ../supervisor/requirements-test.txt")
     if service != "shared":
         expected_requirements.append("pytest")
     if service == "gateway":
