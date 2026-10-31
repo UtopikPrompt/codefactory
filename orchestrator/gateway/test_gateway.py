@@ -299,11 +299,15 @@ def test_worker_result_attempt_must_match_active_attempt(task_gateway):
     db = server._task_db()
     db.execute("UPDATE tasks SET status='running', attempts=2 WHERE task_id=?", (task_id,))
     db.close()
+    edit_rejections = [{"stage": "worker-edit-filter", "reason": "no-op-edit",
+                        "edit_index": 3, "path": "src/app.py"}]
     result = {"task_id": task_id, "repo": "org/repo", "issue_number": 2,
               "status": "candidate_failed", "error": "validation-failed", "attempt": 1,
               "failure_details": {"stage": "validation", "code": "nonzero-exit", "exit_status": 2,
                                   "duration_ms": 125, "output_bytes": 37,
-                                  "output": "private validation output", "source": "private-source.py"}}
+                                  "output": "private validation output", "source": "private-source.py",
+                                  "edit_rejections": edit_rejections},
+              "edit_rejections": edit_rejections}
     assert task_request("POST", f"/api/v1/tasks/{task_id}", result, supervisor=False)[0] == 409
     result["attempt"] = 2
     assert task_request("POST", f"/api/v1/tasks/{task_id}", result, supervisor=False)[0] == 200
@@ -312,11 +316,33 @@ def test_worker_result_attempt_must_match_active_attempt(task_gateway):
     assert len(events) == 1 and events[0]["attempt"] == 2
     assert events[0]["failure_details"] == {
         "stage": "validation", "code": "nonzero-exit", "exit_status": 2,
-        "duration_ms": 125, "output_bytes": 37,
+        "duration_ms": 125, "output_bytes": 37, "edit_rejections": edit_rejections,
     }
     assert detail["result"]["failure_details"] == events[0]["failure_details"]
+    assert detail["result"]["edit_rejections"] == edit_rejections
     assert "private validation output" not in json.dumps(detail)
     assert "private-source.py" not in json.dumps(detail)
+
+
+def test_worker_edit_rejections_are_retained_on_returned_candidate_event(task_gateway):
+    task_id = task_request("POST", "/api/v1/tasks/spawn", issue_payload())[1]["task_id"]
+    db = server._task_db()
+    db.execute("UPDATE tasks SET status='running', attempts=1 WHERE task_id=?", (task_id,))
+    db.close()
+    rejections = [{"stage": "worker-edit-filter", "reason": "no-op-edit",
+                   "edit_index": 2, "path": "src/app.py"}]
+    result = {"task_id": task_id, "repo": "org/repo", "issue_number": 2,
+              "status": "candidate", "attempt": 1, "patch": "safe patch",
+              "validation": {"status": "passed"}, "edit_rejections": rejections}
+
+    assert task_request("POST", f"/api/v1/tasks/{task_id}", result, supervisor=False)[0] == 200
+    detail = task_request("GET", f"/api/v1/tasks/{task_id}")[1]
+
+    assert detail["result"]["edit_rejections"] == rejections
+    assert detail["events"][0]["outcome"] == "returned"
+    assert detail["events"][0]["failure_details"] == {
+        "stage": "worker-edit-filter", "code": "no-op-edit", "edit_rejections": rejections,
+    }
 
 
 @pytest.fixture

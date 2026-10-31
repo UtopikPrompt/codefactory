@@ -109,7 +109,41 @@ test('keeps worker no-op reporting separate from judge rejection rationale', () 
         }],
     }} />)
     expect(screen.getByText('The worker produced no effective change.')).toBeInTheDocument()
+    expect(screen.getByText('Per-edit path and index details were not retained for this task record.')).toBeInTheDocument()
     expect(screen.queryByText('Missing tests and incorrect logic.')).not.toBeInTheDocument()
+})
+
+test('renders exact retained edit rejection context alongside validation diagnostics', () => {
+    render(<Interactions task={{
+        ...task, status: 'failed', events: [{
+            timestamp: 1760000000, attempt: 1, actor: 'worker', action: 'candidate', outcome: 'failed',
+            reason: 'validation-failed', validation_status: 'failed', score: null, review_topics: [],
+            failure_details: {
+                stage: 'validation', code: 'nonzero-exit', exit_status: 1, duration_ms: 9, output_bytes: 49,
+                edit_rejections: [{
+                    stage: 'worker-edit-filter', reason: 'no-op-edit', edit_index: 3, path: 'src/app.py',
+                }],
+            },
+        }],
+    }} />)
+
+    const flow = screen.getByRole('list', { name: 'Recorded execution flow, newest first' })
+    expect(within(flow).getByText(/Validation diagnostic: nonzero-exit; exit status 1; 9 ms; 49 output bytes/)).toBeInTheDocument()
+    expect(within(flow).getByText(/Edit 4 \(index 3; src\/app.py\): no-op-edit/)).toBeInTheDocument()
+    expect(within(flow).getByText(/Proposed content matched the existing file/)).toBeInTheDocument()
+    expect(within(flow).getByText(/Raw validation output was not retained/)).toBeInTheDocument()
+})
+
+test('marks judge rationale unavailable when the task record did not retain it', () => {
+    render(<Interactions task={{
+        ...task, events: [{
+            timestamp: 1760000000, attempt: 1, actor: 'judge', action: 'review', outcome: 'rejected',
+            reason: 'judge-rejected', validation_status: null, score: 0.4, review_topics: ['correctness'],
+            failure_details: null,
+        }],
+    }} />)
+
+    expect(screen.getByText('Judge rejection rationale was not retained for this task record.')).toBeInTheDocument()
 })
 
 test('distinguishes an empty retained timeline from an unavailable timeline', () => {

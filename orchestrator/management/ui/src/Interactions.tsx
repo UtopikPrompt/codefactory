@@ -105,9 +105,25 @@ function ExecutionFlow({ events, role }: { events: OperationalEvent[] | null | u
                 <p>{eventDescription(event, role)}</p>
                 {event.score !== null && <p>Recorded score: {event.score.toFixed(2)} / 1</p>}
                 {event.review_topics.length > 0 && <p>Review topics: {event.review_topics.join(', ')}</p>}
-                <p className="timeline-reason"><strong>Why:</strong> {event.reason === 'judge-rejected' && event.failure_details?.stage === 'judge'
-                    ? event.failure_details.summary
-                    : event.reason ? eventReasons[event.reason] || 'A safe operational reason was recorded.' : 'No reason was recorded for this event.'}</p>
+                <p className="timeline-reason"><strong>Why:</strong> {event.reason === 'judge-rejected'
+                    ? event.failure_details?.stage === 'judge' ? event.failure_details.summary
+                        : 'Judge rejection rationale was not retained for this task record.'
+                    : event.failure_details?.stage === 'worker-edit-filter' ? 'Generated edits were rejected before writing.'
+                        : event.reason ? eventReasons[event.reason] || 'A safe operational reason was recorded.' : 'No reason was recorded for this event.'}</p>
+                {event.failure_details?.stage === 'validation' && <p className="timeline-diagnostic">
+                    Validation diagnostic: {event.failure_details.code}
+                    {event.failure_details.exit_status !== undefined && `; exit status ${event.failure_details.exit_status}`}
+                    {event.failure_details.duration_ms !== undefined && `; ${event.failure_details.duration_ms} ms`}
+                    {event.failure_details.output_bytes !== undefined && `; ${event.failure_details.output_bytes} output bytes`}
+                    . Raw validation output was not retained.
+                </p>}
+                {event.failure_details?.edit_rejections?.length ? <ul className="timeline-edit-rejections" aria-label="Rejected edits">
+                    {event.failure_details.edit_rejections.map(rejection => <li key={`${rejection.edit_index}-${rejection.path}`}>
+                        Edit {rejection.edit_index + 1} (index {rejection.edit_index}; {rejection.path}): {rejection.reason}. Proposed content matched the existing file.
+                    </li>)}
+                </ul> : event.reason === 'no-op-edit' && <p className="timeline-diagnostic">
+                    Per-edit path and index details were not retained for this task record.
+                </p>}
                 <p className="timeline-next"><strong>Next older event:</strong> {nextEvent
                     ? `${eventTitle(nextEvent, role)} · Attempt ${nextEvent.attempt} · ${eventActor(nextEvent, role)}`
                     : 'No earlier event is available in retained history.'}</p>

@@ -284,6 +284,7 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
         allowed_codes = {
             "validation": {"nonzero-exit"},
             "execution": {"timeout", "os-error", "json-error", "http-error", "unexpected"},
+            "worker-edit-filter": {"no-op-edit"},
             "judge": {"review-rejected"},
         }
         if not isinstance(details, dict):
@@ -307,6 +308,32 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
             minimum = -maximum if key == "exit_status" else 0
             if type(value) is int and minimum <= value <= maximum:
                 safe[key] = value
+        rejections = safe_edit_rejections(details.get("edit_rejections"))
+        if stage == "worker-edit-filter":
+            return ({"stage": stage, "code": code, "edit_rejections": rejections}
+                    if code == "no-op-edit" and rejections else None)
+        if stage == "validation" and rejections:
+            safe["edit_rejections"] = rejections
+        return safe
+
+    def safe_edit_rejections(rejections):
+        if not isinstance(rejections, list) or not 1 <= len(rejections) <= 8:
+            return None
+        safe, indexes = [], set()
+        for rejection in rejections:
+            if not isinstance(rejection, dict):
+                return None
+            stage, reason = rejection.get("stage"), rejection.get("reason")
+            index, path = rejection.get("edit_index"), rejection.get("path")
+            if (stage != "worker-edit-filter" or reason != "no-op-edit"
+                    or type(index) is not int or not 0 <= index < 8 or index in indexes
+                    or not isinstance(path, str) or not path or len(path) > 256 or not path.isprintable()
+                    or path.startswith("/") or "\\" in path
+                    or any(part in ("", ".", "..") for part in path.split("/"))
+                    ):
+                return None
+            indexes.add(index)
+            safe.append({"stage": stage, "reason": reason, "edit_index": index, "path": path})
         return safe
 
     def task_events(data):
@@ -345,6 +372,9 @@ def create_app(settings=None, transport=None, signing_keys=None, github_transpor
             details = safe_failure_details(event.get("failure_details"))
             if (details and details.get("stage") == "judge"
                     and (actor != "judge" or action != "review" or outcome != "rejected" or reason != "judge-rejected")):
+                details = None
+            if (details and details.get("stage") == "worker-edit-filter"
+                    and (actor != "worker" or action != "candidate" or outcome not in ("failed", "returned"))):
                 details = None
             safe_events.append({
                 "timestamp": timestamp,

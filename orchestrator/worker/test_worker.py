@@ -578,8 +578,9 @@ def test_generate_edits_includes_supervisor_plan(monkeypatch, supervisor_plan):
 @pytest.mark.parametrize("replacement", ["value = 'private-source'\n", "\nvalue = 'private-source'\n\n"])
 @pytest.mark.parametrize("changed_position", ["none", "all-noop", "before", "after"])
 @pytest.mark.parametrize("existing_changed_file", [False, True])
+@pytest.mark.parametrize("validation_failure", [False, True])
 def test_no_op_filter_preserves_changes_and_safe_diagnostics(
-    monkeypatch, tmp_path, caplog, replacement, changed_position, existing_changed_file,
+    monkeypatch, tmp_path, caplog, replacement, changed_position, existing_changed_file, validation_failure,
 ):
     original = "value = 'private-source'\n"
     other_original = "private-old-source\n"
@@ -628,24 +629,45 @@ def test_no_op_filter_preserves_changes_and_safe_diagnostics(
         assert editor.safe_path("src/app.py").read_text() == original
         return original_apply(editor, proposed)
 
-    validate = AsyncMock(return_value="passed")
+    validation_details = {"stage": "validation", "code": "nonzero-exit", "exit_status": 1,
+                          "duration_ms": 9, "output_bytes": 49}
+    validate = (AsyncMock(side_effect=worker.TaskFailure("validation-failed", validation_details))
+                if validation_failure else AsyncMock(return_value="passed"))
     monkeypatch.setattr(worker.CodeEditor, "apply_edits", apply)
     monkeypatch.setattr(worker, "_run_validation", validate)
     client = AsyncMock()
     client.post.return_value = httpx.Response(200, json={
-        "task_id": "task-3", "status": "candidate_failed" if all_noops else "candidate"})
+        "task_id": "task-3", "status": "candidate_failed" if all_noops or validation_failure else "candidate"})
     payload = {"repo": "org/repo", "issue_number": 3, "supervisor_plan": "private-plan"}
     result = asyncio.run(worker._run_worker(client, "https://acceptor", "worker", payload, "task-3"))
     if all_noops:
         assert result == {
             "task_id": "task-3", "repo": "org/repo", "issue_number": 3,
             "status": "candidate_failed", "error": "no-op-edit", "validation": {"status": "failed"},
+            "edit_rejections": [
+                {"stage": "worker-edit-filter", "reason": "no-op-edit", "edit_index": index, "path": edit["path"]}
+                for index, edit in enumerate(edits)
+            ],
         }
         assert applied == []
         validate.assert_not_awaited()
+    elif validation_failure:
+        assert result["status"] == "candidate_failed"
+        assert result["error"] == "validation-failed"
+        assert result["failure_details"] == validation_details
+        assert result["edit_rejections"] == [
+            {"stage": "worker-edit-filter", "reason": "no-op-edit", "edit_index": int(changed_position == "before"),
+             "path": "src/app.py"},
+        ]
+        assert applied == [[changed_edit]]
+        validate.assert_awaited_once()
     else:
         assert result["status"] == "candidate"
         assert result["edits"] == [changed_edit]
+        assert result["edit_rejections"] == [
+            {"stage": "worker-edit-filter", "reason": "no-op-edit", "edit_index": int(changed_position == "before"),
+             "path": "src/app.py"},
+        ]
         assert result["changed_files"] == ["src/other.py"]
         assert "src/app.py" not in result["patch"]
         assert applied == [[changed_edit]]

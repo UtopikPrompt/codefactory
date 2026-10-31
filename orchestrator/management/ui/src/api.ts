@@ -30,14 +30,22 @@ export interface Task {
         report_failed: boolean
     }
 }
+export interface EditRejection {
+    stage: 'worker-edit-filter'
+    reason: 'no-op-edit'
+    edit_index: number
+    path: string
+}
 export type FailureDetails = (
     | { stage: 'validation'; code: 'nonzero-exit' }
     | { stage: 'execution'; code: 'timeout' | 'os-error' | 'json-error' | 'http-error' | 'unexpected' }
+    | { stage: 'worker-edit-filter'; code: 'no-op-edit'; edit_rejections: EditRejection[] }
     | { stage: 'judge'; code: 'review-rejected'; summary: string }
 ) & {
     exit_status?: number
     duration_ms?: number
     output_bytes?: number
+    edit_rejections?: EditRejection[]
 }
 export interface OperationalEvent {
     timestamp: number

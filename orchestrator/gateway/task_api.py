@@ -23,8 +23,30 @@ EVENT_TOPICS = ("tests", "correctness", "security", "scope", "patch-integrity")
 FAILURE_DETAIL_CODES = {
     "validation": {"nonzero-exit"},
     "execution": {"timeout", "os-error", "json-error", "http-error", "unexpected"},
+    "worker-edit-filter": {"no-op-edit"},
     "judge": {"review-rejected"},
 }
+
+
+def safe_edit_rejections(rejections):
+    if not isinstance(rejections, list) or not 1 <= len(rejections) <= 8:
+        return None
+    safe, indexes = [], set()
+    for rejection in rejections:
+        if not isinstance(rejection, dict):
+            return None
+        stage, reason = rejection.get("stage"), rejection.get("reason")
+        index, path = rejection.get("edit_index"), rejection.get("path")
+        if (stage != "worker-edit-filter" or reason != "no-op-edit"
+                or type(index) is not int or not 0 <= index < 8 or index in indexes
+                or not isinstance(path, str) or not path or len(path) > 256 or not path.isprintable()
+                or path.startswith("/") or "\\" in path
+                or any(part in ("", ".", "..") for part in path.split("/"))
+                ):
+            return None
+        indexes.add(index)
+        safe.append({"stage": stage, "reason": reason, "edit_index": index, "path": path})
+    return safe
 
 
 def safe_failure_details(details):
@@ -42,12 +64,20 @@ def safe_failure_details(details):
                 or re.search(r"[A-Z0-9]{32,}", summary)):
             return None
         return {"stage": "judge", "code": "review-rejected", "summary": summary}
+    if stage == "worker-edit-filter":
+        rejections = safe_edit_rejections(details.get("edit_rejections"))
+        return ({"stage": stage, "code": code, "edit_rejections": rejections}
+                if code == "no-op-edit" and rejections else None)
     safe = {"stage": stage, "code": code}
     for key, maximum in (("exit_status", 255), ("duration_ms", 600000), ("output_bytes", 65536)):
         value = details.get(key)
         minimum = -maximum if key == "exit_status" else 0
         if type(value) is int and minimum <= value <= maximum:
             safe[key] = value
+    if stage == "validation":
+        rejections = safe_edit_rejections(details.get("edit_rejections"))
+        if rejections:
+            safe["edit_rejections"] = rejections
     return safe
 
 
@@ -60,6 +90,9 @@ def append_event(db, task_id, attempt, actor, action, outcome, *, reason=None, v
     safe_details = safe_failure_details(failure_details)
     if (safe_details and safe_details.get("stage") == "judge"
             and (actor != "judge" or action != "review" or outcome != "rejected" or reason != "judge-rejected")):
+        safe_details = None
+    if (safe_details and safe_details.get("stage") == "worker-edit-filter"
+            and (actor != "worker" or action != "candidate" or outcome not in ("failed", "returned"))):
         safe_details = None
     db.execute("""INSERT INTO task_events(task_id,created_at,attempt,actor,action,outcome,reason,
         validation_status,score,review_topics,failure_details) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
@@ -84,6 +117,10 @@ def operational_events(db, task_id):
         if (safe_details and safe_details.get("stage") == "judge"
             and (row["actor"] != "judge" or row["action"] != "review" or row["outcome"] != "rejected"
                  or row["reason"] != "judge-rejected")):
+            safe_details = None
+        if (safe_details and safe_details.get("stage") == "worker-edit-filter"
+            and (row["actor"] != "worker" or row["action"] != "candidate"
+                 or row["outcome"] not in ("failed", "returned"))):
             safe_details = None
         events.append({
             "timestamp": row["created_at"], "attempt": row["attempt"] if type(row["attempt"]) is int and 1 <= row["attempt"] <= 8 else None,
@@ -418,6 +455,11 @@ class TaskAPI:
                     payload.pop("failure_details")
                 else:
                     payload["failure_details"] = failure_details
+            edit_rejections = safe_edit_rejections(payload.get("edit_rejections"))
+            if edit_rejections is None:
+                payload.pop("edit_rejections", None)
+            else:
+                payload["edit_rejections"] = edit_rejections
             if task["status"] in ("completed", "failed"):
                 db.commit()
                 handler._json(409, {"error": "task-already-terminal"})
@@ -435,10 +477,16 @@ class TaskAPI:
                     validation = payload.get("validation")
                     validation = validation if isinstance(validation, dict) else {}
                     reason = str(payload.get("error", "")).split(":", 1)[0]
+                    failure_details = payload.get("failure_details")
+                    if edit_rejections:
+                        if failure_details is None:
+                            failure_details = {"stage": "worker-edit-filter", "code": "no-op-edit"}
+                        if isinstance(failure_details, dict):
+                            failure_details = {**failure_details, "edit_rejections": edit_rejections}
                     append_event(db, task["task_id"], reported_attempt, "worker", "candidate",
                                  "failed" if payload["status"] == "candidate_failed" else "returned",
                                  reason=reason, validation_status=validation.get("status"),
-                                 failure_details=payload.get("failure_details"))
+                                 failure_details=failure_details)
                 except (TypeError, ValueError):
                     append_event(db, task["task_id"], task["attempts"] or 1, "worker", "candidate", "returned")
             db.commit()

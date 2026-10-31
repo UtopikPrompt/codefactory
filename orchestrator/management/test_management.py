@@ -534,6 +534,39 @@ def test_task_events_expose_only_bounded_operational_fields(boundary):
         assert forbidden not in response.text
 
 
+def test_management_task_events_expose_safe_edit_rejection_context_and_legacy_gap(boundary):
+    client, upstream, _, _ = boundary
+    upstream.return_value = httpx.Response(200, json={
+        "task_id": "task-1", "status": "failed", "events": [{
+            "timestamp": 1760000000, "attempt": 1, "actor": "worker", "action": "candidate",
+            "outcome": "failed", "reason": "validation-failed", "validation_status": "failed",
+            "failure_details": {
+                "stage": "validation", "code": "nonzero-exit", "exit_status": 1,
+                "duration_ms": 9, "output_bytes": 49, "output": "private validation output",
+                "edit_rejections": [{"stage": "worker-edit-filter", "reason": "no-op-edit",
+                                     "edit_index": 3, "path": "src/app.py", "content": "private source"}],
+            },
+        }, {
+            "timestamp": 1760000001, "attempt": 1, "actor": "worker", "action": "candidate",
+            "outcome": "failed", "reason": "no-op-edit", "failure_details": None,
+        }],
+    })
+
+    response = client.get("/management/api/tasks/task-1")
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert events[0]["failure_details"] == {
+        "stage": "validation", "code": "nonzero-exit", "exit_status": 1,
+        "duration_ms": 9, "output_bytes": 49,
+        "edit_rejections": [{"stage": "worker-edit-filter", "reason": "no-op-edit",
+                             "edit_index": 3, "path": "src/app.py"}],
+    }
+    assert events[1]["failure_details"] is None
+    assert "private validation output" not in response.text
+    assert "private source" not in response.text
+
+
 @pytest.mark.parametrize("coordination,score", [
     (None, None), ({}, "0.9"), ([], True),
     ({"plan_recorded": "secret", "latest_feedback": []}, -1),

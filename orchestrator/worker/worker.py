@@ -205,9 +205,10 @@ class CodeEditor:
 
 
 class TaskFailure(ValueError):
-    def __init__(self, message, failure_details=None):
+    def __init__(self, message, failure_details=None, edit_rejections=None):
         super().__init__(message)
         self.failure_details = failure_details
+        self.edit_rejections = edit_rejections
 
 
 def _generic_failure_details(exc):
@@ -584,9 +585,14 @@ async def _implement_issue(client, payload, task_id, workspace):
         _reject_secret_content(path + content)
         originals[path] = full.read_text() if full.exists() else ""
     changed_edits = []
+    edit_rejections = []
     for index, edit in enumerate(edits):
         path, content = edit["path"], edit["content"]
         if originals[path].strip() == content.strip():
+            edit_rejections.append({
+                "stage": "worker-edit-filter", "reason": "no-op-edit",
+                "edit_index": index, "path": path,
+            })
             logger.warning("generated_edit_rejected %s", json.dumps({
                 "task_id": task_id, "reason": "no-op-edit", "path": path,
                 "base_sha": sha, "edit_index": index, "edit_count": len(edits),
@@ -597,23 +603,30 @@ async def _implement_issue(client, payload, task_id, workspace):
             continue
         changed_edits.append(edit)
     if not changed_edits:
-        raise TaskFailure("no-op-edit")
+        raise TaskFailure("no-op-edit", edit_rejections=edit_rejections)
     edits = changed_edits
-    patch = "\n".join("".join(difflib.unified_diff(
-        originals[edit["path"]].splitlines(keepends=True), edit["content"].splitlines(keepends=True),
-        fromfile="a/" + edit["path"], tofile="b/" + edit["path"])) for edit in edits)
-    if not patch.strip():
-        raise TaskFailure("empty-patch")
-    _reject_secret_content(patch)
-    _output, changed, _contents = editor.apply_edits(edits)
-    if len(changed) != len(edits):
-        raise TaskFailure("edits-not-applied")
-    validation = await _run_validation(workspace, policy)
-    return {"task_id": task_id, "repo": repo, "issue_number": issue_number, "status": "candidate",
-            "role": os.environ.get("WORKER_ROLE", "coder"), "patch": patch,
-            "validation": {"status": "passed", "output": validation[:16000]},
-            "changed_files": changed, "edits": edits, "base_branch": branch, "base_sha": sha,
-            "issue_title": issue.get("title", "")[:1000]}
+    try:
+        patch = "\n".join("".join(difflib.unified_diff(
+            originals[edit["path"]].splitlines(keepends=True), edit["content"].splitlines(keepends=True),
+            fromfile="a/" + edit["path"], tofile="b/" + edit["path"])) for edit in edits)
+        if not patch.strip():
+            raise TaskFailure("empty-patch")
+        _reject_secret_content(patch)
+        _output, changed, _contents = editor.apply_edits(edits)
+        if len(changed) != len(edits):
+            raise TaskFailure("edits-not-applied")
+        validation = await _run_validation(workspace, policy)
+        result = {"task_id": task_id, "repo": repo, "issue_number": issue_number, "status": "candidate",
+                  "role": os.environ.get("WORKER_ROLE", "coder"), "patch": patch,
+                  "validation": {"status": "passed", "output": validation[:16000]},
+                  "changed_files": changed, "edits": edits, "base_branch": branch, "base_sha": sha,
+                  "issue_title": issue.get("title", "")[:1000]}
+        if edit_rejections:
+            result["edit_rejections"] = edit_rejections
+        return result
+    except Exception as exc:
+        exc.edit_rejections = edit_rejections
+        raise
 
 
 def render_patch(changed: list[str], contents: list[tuple[str, str]]) -> str:
@@ -770,6 +783,9 @@ async def _execute_task(client, headers, acceptor_url, worker_id, spawn_payload,
             final["failure_details"] = failure_details
             logger.warning("worker failure diagnostics task=%s details=%s", task_id,
                            json.dumps(failure_details, sort_keys=True))
+        edit_rejections = getattr(exc, "edit_rejections", None)
+        if edit_rejections:
+            final["edit_rejections"] = edit_rejections
     try:
         _reject_secret_content(json.dumps(final))
     except TaskFailure:
