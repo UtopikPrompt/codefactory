@@ -171,7 +171,26 @@ def review_topics(review):
     ) if re.search(pattern, text)]
 
 
-def failure_feedback(stage, reason, attempt, review=""):
+def _safe_noop_paths(edit_rejections):
+    if not isinstance(edit_rejections, list) or not 1 <= len(edit_rejections) <= 8:
+        return []
+    paths, indexes = [], set()
+    for rejection in edit_rejections:
+        if not isinstance(rejection, dict):
+            return []
+        index, path = rejection.get("edit_index"), rejection.get("path")
+        if (rejection.get("stage") != "worker-edit-filter" or rejection.get("reason") != "no-op-edit"
+                or type(index) is not int or not 0 <= index < 8 or index in indexes
+                or not isinstance(path, str) or not 1 <= len(path) <= 128 or not path.isascii()
+                or not path.isprintable() or path.startswith("/") or "\\" in path
+                or any(part in ("", ".", "..") for part in path.split("/"))):
+            return []
+        indexes.add(index)
+        paths.append(path)
+    return paths
+
+
+def failure_feedback(stage, reason, attempt, review="", edit_rejections=None):
     """Keep only closed-vocabulary diagnostics, never raw exceptions or model text."""
     allowed_reasons = {
         "no-op-edit", "empty-or-invalid-edits", "invalid-generation-output",
@@ -185,6 +204,10 @@ def failure_feedback(stage, reason, attempt, review=""):
     code = str(reason).split(":", 1)[0]
     feedback = {"stage": stage, "attempt": min(MAX_TOTAL_ATTEMPTS, max(1, int(attempt))),
                 "reason": code if code in allowed_reasons else "task-execution-failed"}
+    if stage == "worker" and feedback["reason"] == "no-op-edit":
+        rejected_paths = _safe_noop_paths(edit_rejections)
+        if rejected_paths:
+            feedback["rejected_paths"] = rejected_paths
     if stage == "judge":
         feedback["reason"] = "judge-rejected"
         # Extract topics, not excerpts: redaction alone cannot safely remove arbitrary

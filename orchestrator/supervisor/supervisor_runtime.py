@@ -66,7 +66,17 @@ class SupervisorLoop:
                 or current["attempts"] != task["attempts"]):
             return
         reason = str(error).split(":", 1)[0]
-        feedback = failure_feedback(stage, reason, task["attempts"])
+        edit_rejections = None
+        if stage == "worker" and reason == "no-op-edit":
+            result_row = db.execute("SELECT result FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            try:
+                candidate = json.loads(result_row["result"] or "null") if result_row else None
+            except (TypeError, ValueError):
+                candidate = None
+            if (isinstance(candidate, dict) and candidate.get("status") == "candidate_failed"
+                    and candidate.get("error") == "no-op-edit"):
+                edit_rejections = candidate.get("edit_rejections")
+        feedback = failure_feedback(stage, reason, task["attempts"], edit_rejections=edit_rejections)
         safe_feedback = json.loads(feedback)
         terminal_errors = {
             "pr-policy-required", "pr-base-branch-not-allowed", "pr-reviewer-policy-invalid",

@@ -517,6 +517,49 @@ def test_retry_feedback_is_bounded_closed_vocabulary(reason):
                      "review_topics": ["tests", "correctness", "security", "scope", "patch-integrity"]}
 
 
+def test_noop_retry_feedback_contains_only_bounded_rejection_paths():
+    rejections = [
+        {"stage": "worker-edit-filter", "reason": "no-op-edit", "edit_index": 0, "path": "src/app.py"},
+        {"stage": "worker-edit-filter", "reason": "no-op-edit", "edit_index": 1, "path": "src/engine.py"},
+    ]
+    feedback = json.loads(failure_feedback("worker", "no-op-edit", 1,
+                                           edit_rejections=rejections))
+    assert feedback == {"stage": "worker", "reason": "no-op-edit", "attempt": 1,
+                        "rejected_paths": ["src/app.py", "src/engine.py"]}
+    assert len(json.dumps(feedback).encode()) < 512
+    assert "content" not in json.dumps(feedback)
+    invalid = [{**rejections[0], "path": "../private-source.py"}]
+    assert "rejected_paths" not in failure_feedback("worker", "no-op-edit", 1,
+                                                      edit_rejections=invalid)
+
+
+def test_noop_failure_is_terminal_at_total_attempt_limit(monkeypatch, tmp_path):
+    db = task_database(str(tmp_path / "tasks.sqlite3"))
+    result = {"status": "candidate_failed", "error": "no-op-edit", "edit_rejections": [
+        {"stage": "worker-edit-filter", "reason": "no-op-edit", "edit_index": 0, "path": "src/app.py"},
+    ]}
+    db.execute("""INSERT INTO tasks(task_id,status,payload,result,attempts,claim_owner)
+        VALUES(?,?,?,?,?,?)""",
+        ("task", "running", "{}", json.dumps(result), 8, "owner"))
+    task = db.execute("SELECT * FROM tasks WHERE task_id='task'").fetchone()
+    completed = []
+    monkeypatch.setattr(supervisor_module, "_complete_via_gateway",
+                        lambda *args, **kwargs: completed.append((args, kwargs)))
+
+    asyncio.run(supervisor_module.SupervisorLoop()._handle_task_failure(
+        db, task, "owner", "worker", "no-op-edit"))
+
+    feedback = json.loads(db.execute("SELECT retry_feedback FROM tasks WHERE task_id='task'").fetchone()[0])
+    assert feedback == {"stage": "worker", "reason": "no-op-edit", "attempt": 8,
+                        "rejected_paths": ["src/app.py"]}
+    assert completed[0][0][:2] == ("task", "failed")
+    assert completed[0][1]["error"] == "no-op-edit"
+    event = db.execute("SELECT outcome,reason FROM task_events WHERE actor='worker'").fetchone()
+    assert tuple(event) == ("failed", "no-op-edit")
+    assert db.execute("SELECT status FROM tasks WHERE task_id='task'").fetchone()[0] == "running"
+    db.close()
+
+
 def test_judge_review_summary_is_bounded_and_rejects_sensitive_or_verbatim_text():
     assert safe_judge_review("Missing tests and incorrect logic.") == "Missing tests and incorrect logic."
     assert safe_judge_review("The API key is secret-token.") is None
@@ -532,7 +575,9 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
 ):
     path = str(tmp_path / "tasks.sqlite3")
     original = '{"repository_auth":"github-app","user_task":"immutable request"}'
-    candidate = {"status": "candidate_failed", "error": "no-op-edit"} if failure_kind == "worker" else {
+    candidate = {"status": "candidate_failed", "error": "no-op-edit", "edit_rejections": [
+        {"stage": "worker-edit-filter", "reason": "no-op-edit", "edit_index": 0, "path": "src/app.py"},
+    ]} if failure_kind == "worker" else {
         "status": "candidate", "validation": {"status": "passed"}, "patch": "verified patch"}
     db = task_database(path)
     db.execute("""INSERT INTO tasks(task_id,status,payload,result,plan,job,config_version,config_hash)
@@ -563,6 +608,8 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     assert feedback["reason"] == ("no-op-edit" if failure_kind == "worker" else "judge-rejected")
     if failure_kind == "judge":
         assert feedback["review_topics"] == ["tests", "correctness", "security"]
+    else:
+        assert feedback["rejected_paths"] == ["src/app.py"]
     assert "private-source" not in row["retry_feedback"] and "credential-token" not in row["retry_feedback"]
     events = db.execute("SELECT attempt, actor, action, outcome, reason, failure_details FROM task_events ORDER BY event_id").fetchall()
     assert (events[0]["attempt"], events[0]["actor"], events[0]["action"], events[0]["outcome"]) == (
