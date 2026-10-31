@@ -535,9 +535,10 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     candidate = {"status": "candidate_failed", "error": "no-op-edit"} if failure_kind == "worker" else {
         "status": "candidate", "validation": {"status": "passed"}, "patch": "verified patch"}
     db = task_database(path)
-    db.execute("""INSERT INTO tasks(task_id,status,payload,result,plan,config_version,config_hash)
-        VALUES(?,?,?,?,?,?,?)""",
-        ("task", "queued", original, json.dumps(candidate), "reused plan", "1", "pinned-hash"))
+    db.execute("""INSERT INTO tasks(task_id,status,payload,result,plan,job,config_version,config_hash)
+        VALUES(?,?,?,?,?,?,?,?)""",
+        ("task", "queued", original, json.dumps(candidate), "reused plan",
+         '{"name":"worker-task-1"}', "1", "pinned-hash"))
     db.close()
     monkeypatch.setattr(supervisor_module, "task_database", lambda: task_database(path))
     monkeypatch.setattr(supervisor_module, "_load_pinned_catalog", lambda _task, _db=None: ({}, {
@@ -556,6 +557,7 @@ def test_retry_feedback_survives_requeue_reopen_plan_reuse_and_recovery(
     db = task_database(path)
     row = db.execute("SELECT * FROM tasks").fetchone()
     assert row["status"] == "queued" and row["result"] is None
+    assert row["job"] is None
     feedback = json.loads(row["retry_feedback"])
     assert feedback["stage"] == failure_kind and feedback["attempt"] == 1
     assert feedback["reason"] == ("no-op-edit" if failure_kind == "worker" else "judge-rejected")

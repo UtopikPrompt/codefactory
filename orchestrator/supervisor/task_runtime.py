@@ -194,8 +194,8 @@ def failure_feedback(stage, reason, attempt, review=""):
 
 
 def requeue_failed_task(db, task_id, owner, feedback):
-    # Clearing a result and retaining its safe feedback must survive as one write.
-    db.execute("""UPDATE tasks SET status='queued', result=NULL, retry_feedback=?,
+    # A worker Job belongs to the failed attempt, not the next queued attempt.
+    db.execute("""UPDATE tasks SET status='queued', result=NULL, job=NULL, retry_feedback=?,
         claim_owner=NULL, claimed_at=NULL WHERE task_id=? AND claim_owner=?""",
         (feedback, task_id, owner))
 

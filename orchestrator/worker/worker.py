@@ -423,9 +423,9 @@ async def _prepare_native_model(base_url, model, enabled):
                     status = entry.get("status", {})
                     if status.get("failed"):
                         raise TaskFailure("native-model-download-or-load-failed")
-                    if status.get("value") in ("unloaded", "loaded", "sleeping"):
+                    if status.get("value") in ("loaded", "sleeping"):
                         return
-                if not requested and (entry is None or entry.get("status", {}).get("value") == "incomplete"):
+                if not requested and (entry is None or status.get("value") in ("incomplete", "unloaded")):
                     response = await client.post(endpoint, json={"model": model})
                     if response.status_code == 400:
                         detail = response.json().get("error", {}).get("message", "")
