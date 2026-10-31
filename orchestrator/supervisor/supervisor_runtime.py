@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import threading
 import time
 import uuid
+import weakref
 
 from durable_task_graph import (
     WORKFLOW_SCHEMA_VERSION,
@@ -17,6 +19,19 @@ from task_runtime import (
     record_task_event,
     requeue_failed_task,
 )
+
+_checkpoint_setup_locks = weakref.WeakKeyDictionary()
+_checkpoint_setup_locks_guard = threading.Lock()
+
+
+def _checkpoint_setup_lock():
+    loop = asyncio.get_running_loop()
+    with _checkpoint_setup_locks_guard:
+        lock = _checkpoint_setup_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _checkpoint_setup_locks[loop] = lock
+        return lock
 
 
 class SupervisorLoop:
@@ -127,6 +142,8 @@ class SupervisorLoop:
             checkpoint_path = supervisor.checkpoint_database_path(
                 db, task["attempts"], WORKFLOW_SCHEMA_VERSION)
             async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+                async with _checkpoint_setup_lock():
+                    await checkpointer.aget_tuple(config)
                 graph = build_durable_task_graph(DurableTaskWorkflow(supervisor, db), checkpointer)
                 await graph.ainvoke({"task_id": task_id, "attempt": task["attempts"],
                                     "schema_version": WORKFLOW_SCHEMA_VERSION}, config)
